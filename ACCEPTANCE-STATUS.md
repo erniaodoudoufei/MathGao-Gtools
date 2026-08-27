@@ -22,7 +22,7 @@
 - [x] 本机交互式测试人为延迟历史查询时，窗口在查询完成前已绘制加载状态和表格框架
 - [x] OCR Worker 与 LongShot Worker 原有测试保持通过
 - [x] NuGet 直接及传递依赖的已知漏洞扫描无命中
-- [ ] `v1.1.6` 发布提交的 GitHub Actions 通过
+- [x] `v1.1.6` 发布提交的 GitHub Actions 通过
 
 ## 发布边界
 
