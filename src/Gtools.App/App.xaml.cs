@@ -16,6 +16,7 @@ public partial class App : System.Windows.Application
     private ClipboardHistoryService? _clipboard;
     private System.Windows.Forms.NotifyIcon? _tray;
     private DashboardWindow? _dashboard;
+    private ClipboardWindow? _clipboardWindow;
     private FloatingDockWindow? _dock;
     private bool _exiting;
     private AppRuntimeOptions _runtime=new(null,false,false,false,false,null,null);
@@ -179,7 +180,12 @@ public partial class App : System.Windows.Application
         await _settings.SaveAsync();await ApplyModulesAsync();Dock().ShowTodo(_settings.Current.TodoEnabled);
         _dashboard?.Refresh(_settings.Current);
     }
-    private void ShowClipboard(){var previous=NativeMethods.GetForegroundWindow();var w=new ClipboardWindow(_db,_clipboard!,previous);w.Show();w.Activate();}
+    private void ShowClipboard()
+    {
+        if(_clipboardWindow is {IsVisible:true}){_clipboardWindow.FocusSearch();return;}
+        var previous=NativeMethods.GetForegroundWindow();var window=new ClipboardWindow(_db,_clipboard!,previous);_clipboardWindow=window;
+        window.Closed+=(_,_)=>{if(ReferenceEquals(_clipboardWindow,window))_clipboardWindow=null;};window.Show();window.Activate();
+    }
     private void ShowSettings(){var w=new SettingsWindow(_settings.Current,_settings);w.SettingsChanged+=async(_,_)=>{ApplyStartup();await ApplyModulesAsync();_dashboard?.Refresh(_settings.Current);await RefreshHealthAsync();};w.ShowDialog();}
     private void ShowDiagnostics(){new DiagnosticsWindow(AppPaths.Root,DiagnosticLog.CurrentPath,()=>_modules.GetHealthAsync()).Show();}
     private void ShowToast(string text,Action? click=null)=>Dispatcher.Invoke(()=>new ToastWindow(text,click).Show());

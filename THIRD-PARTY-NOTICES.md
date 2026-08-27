@@ -16,6 +16,6 @@ MathGao-Gtools 自身源码采用 MIT 许可证。发布包还包含第三方 Nu
 
 `PaddleOCRSharp` 随包携带的 `PaddleOCR.dll` 是上游说明中的“第三方免费社区版”原生组件。PaddleOCRSharp 自带许可证明确表示其 Apache-2.0 只覆盖 C# 源码，并不授予该第三方 DLL 的许可。因此清单对该文件使用 `NOASSERTION`，正式公开再分发前需要发布者另行确认授权；本 notices 不是对该 DLL 授权状态的法律判断。
 
-长截图不使用 OpenCV 的 FFmpeg Video I/O 插件。`opencv_videoio_ffmpeg*_64.dll` 不得进入 v1.1.5 发布包；清单将它列为明确排除项，避免引入本产品不需要的 FFmpeg 许可范围。
+长截图不使用 OpenCV 的 FFmpeg Video I/O 插件。`opencv_videoio_ffmpeg*_64.dll` 不得进入发布包；清单将它列为明确排除项，避免引入本产品不需要的 FFmpeg 许可范围。
 
 Gtools 的实现没有复制 Ditto、TrafficMonitor、Shot、STranslate、AltSnap 或微信的源码或品牌素材。提及这些名称仅用于说明兼容边界，不代表从属、授权或背书关系。

@@ -189,7 +189,7 @@ foreach ($symbolFile in Get-ChildItem -LiteralPath $publishRoot -Recurse -File -
     Remove-Item -LiteralPath $validatedSymbol -Force
 }
 
-foreach ($document in @('README.md','THIRD-PARTY-NOTICES.md','LICENSE')) {
+foreach ($document in @('README.md','CHANGELOG.md','ACCEPTANCE-STATUS.md',"RELEASE-NOTES-v$version.md",'THIRD-PARTY-NOTICES.md','LICENSE')) {
     $sourceDocument = Join-Path $workspace $document
     if (-not (Test-Path -LiteralPath $sourceDocument -PathType Leaf)) { throw "发布文档不存在：$document" }
     Copy-Item -LiteralPath $sourceDocument -Destination $publishRoot -Force

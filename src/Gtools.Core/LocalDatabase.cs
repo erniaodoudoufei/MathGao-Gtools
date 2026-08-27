@@ -6,6 +6,12 @@ public sealed record VocabularyEntry(long Id, string Word, string Meaning, strin
     DateTimeOffset CreatedAt, string Phonetic = "", int Familiarity = 0, DateTimeOffset? LastReviewed = null);
 public sealed record ClipboardEntry(long Id, string Kind, string Preview, string? Text, string? Html, string? Rtf,
     byte[]? ImagePng, bool IsFavorite, DateTimeOffset CreatedAt, string Hash);
+/// <summary>
+/// Lightweight row used by the history panel. Large text/HTML/RTF values and image BLOBs are
+/// deliberately omitted so opening the window never materializes the whole clipboard database.
+/// </summary>
+public sealed record ClipboardEntrySummary(long Id, string Kind, string Preview, bool IsFavorite,
+    DateTimeOffset CreatedAt, bool HasImage);
 public sealed record TodoItem(long Id, string Text, bool IsDone, int SortOrder, DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt);
 
 public sealed class LocalDatabase
@@ -19,19 +25,23 @@ public sealed class LocalDatabase
         _connectionString = new SqliteConnectionStringBuilder { DataSource = file, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false }.ToString();
     }
 
-    private SqliteConnection Open()
+    private SqliteConnection Open(bool initializeJournal = false)
     {
         var connection = new SqliteConnection(_connectionString);
         connection.Open();
         using var pragma = connection.CreateCommand();
-        pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;";
+        // WAL is persistent database state. Re-requesting the journal mode for every thumbnail read
+        // can negotiate a write lock and makes opening a large history needlessly expensive.
+        pragma.CommandText = initializeJournal
+            ? "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=2000;"
+            : "PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=2000;";
         pragma.ExecuteNonQuery();
         return connection;
     }
 
     public void Initialize()
     {
-        using var c = Open();
+        using var c = Open(initializeJournal:true);
         using var cmd = c.CreateCommand();
         cmd.CommandText = """
         CREATE TABLE IF NOT EXISTS vocabulary(
@@ -183,6 +193,38 @@ public sealed class LocalDatabase
         cmd.Parameters.AddWithValue("$n", count); using var r = cmd.ExecuteReader(); var list = new List<ClipboardEntry>();
         while (r.Read()) list.Add(new(r.GetInt64(0), r.GetString(1), r.GetString(2), GetNullable(r,3), GetNullable(r,4), GetNullable(r,5), r.IsDBNull(6)?null:(byte[])r[6], r.GetInt64(7)!=0, DateTimeOffset.Parse(r.GetString(8)), r.GetString(9)));
         return list;
+    }
+
+    public IReadOnlyList<ClipboardEntrySummary> SearchClipboardSummaries(string query = "", int count = 100)
+    {
+        using var c = Open(); using var cmd = c.CreateCommand();
+        if (string.IsNullOrWhiteSpace(query))
+            cmd.CommandText = "SELECT id,kind,preview,is_favorite,created_at,image_png IS NOT NULL FROM clipboard_items ORDER BY is_favorite DESC,id DESC LIMIT $n";
+        else
+        {
+            cmd.CommandText = "SELECT c.id,c.kind,c.preview,c.is_favorite,c.created_at,c.image_png IS NOT NULL FROM clipboard_fts f JOIN clipboard_items c ON c.id=f.rowid WHERE clipboard_fts MATCH $q ORDER BY c.is_favorite DESC,c.id DESC LIMIT $n";
+            cmd.Parameters.AddWithValue("$q", string.Join(' ', query.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(EscapeFts)));
+        }
+        cmd.Parameters.AddWithValue("$n", Math.Clamp(count,1,500));
+        using var r = cmd.ExecuteReader(); var list = new List<ClipboardEntrySummary>();
+        while (r.Read()) list.Add(new(r.GetInt64(0),r.GetString(1),r.GetString(2),r.GetInt64(3)!=0,
+            DateTimeOffset.Parse(r.GetString(4)),r.GetInt64(5)!=0));
+        return list;
+    }
+
+    public ClipboardEntry? GetClipboard(long id)
+    {
+        using var c=Open();using var cmd=c.CreateCommand();
+        cmd.CommandText="SELECT id,kind,preview,text_value,html_value,rtf_value,image_png,is_favorite,created_at,content_hash FROM clipboard_items WHERE id=$id";
+        cmd.Parameters.AddWithValue("$id",id);using var r=cmd.ExecuteReader();if(!r.Read())return null;
+        return new(r.GetInt64(0),r.GetString(1),r.GetString(2),GetNullable(r,3),GetNullable(r,4),GetNullable(r,5),
+            r.IsDBNull(6)?null:(byte[])r[6],r.GetInt64(7)!=0,DateTimeOffset.Parse(r.GetString(8)),r.GetString(9));
+    }
+
+    public byte[]? GetClipboardImage(long id)
+    {
+        using var c=Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT image_png FROM clipboard_items WHERE id=$id";
+        cmd.Parameters.AddWithValue("$id",id);var value=cmd.ExecuteScalar();return value is byte[] image?image:null;
     }
 
     public long AddTodo(string text)

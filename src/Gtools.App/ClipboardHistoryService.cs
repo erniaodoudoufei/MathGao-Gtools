@@ -13,7 +13,12 @@ internal sealed class ClipboardHistoryService : IDisposable
     private readonly LocalDatabase _db;
     private readonly Func<int> _limit;
     private readonly HwndSource _source;
-    private int _suppress;
+    private readonly CancellationTokenSource _lifetime=new();
+    private readonly object _writeQueueLock=new();
+    private readonly object _restoreLock=new();
+    private Task _writeTail=Task.CompletedTask;
+    private string? _restoredHash;
+    private DateTimeOffset _restoreSuppressionUntil;
     public bool Paused { get; set; }
     public event EventHandler? Updated;
 
@@ -27,7 +32,6 @@ internal sealed class ClipboardHistoryService : IDisposable
     {
         if (msg == NativeMethods.WM_CLIPBOARDUPDATE)
         {
-            if (_suppress > 0) { _suppress--; return IntPtr.Zero; }
             if (!Paused) _source.Dispatcher.BeginInvoke(CaptureCurrent);
         }
         return IntPtr.Zero;
@@ -38,18 +42,43 @@ internal sealed class ClipboardHistoryService : IDisposable
         {
             var data = Clipboard.GetDataObject(); if (data is null) return;
             string? text = GetString(data, DataFormats.UnicodeText); string? html = GetString(data, DataFormats.Html); string? rtf = GetString(data, DataFormats.Rtf);
-            byte[]? png = null;
+            BitmapSource? bitmapCopy=null;var width=0;var height=0;
             if (data.GetDataPresent(DataFormats.Bitmap) && data.GetData(DataFormats.Bitmap) is BitmapSource bitmap)
             {
-                var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap)); using var ms = new MemoryStream(); encoder.Save(ms); png = ms.ToArray();
+                // Clipboard objects are tied to the UI dispatcher. Copy the pixels once and freeze the
+                // result; PNG compression and SQLite I/O can then run off the UI thread in order.
+                var copy=new WriteableBitmap(bitmap);copy.Freeze();bitmapCopy=copy;width=copy.PixelWidth;height=copy.PixelHeight;
             }
-            if (string.IsNullOrEmpty(text) && png is null && string.IsNullOrEmpty(html) && string.IsNullOrEmpty(rtf)) return;
-            var kind = png is not null ? "image" : (html is not null || rtf is not null ? "rich-text" : "text");
-            var preview = png is not null ? $"图片 {bitmapWidth(png)}" : NormalizePreview(text ?? StripMarkup(html ?? rtf ?? ""));
-            var hash = ComputeHash(text, html, rtf, png);
-            if (_db.AddClipboard(new(0,kind,preview,text,html,rtf,png,false,DateTimeOffset.Now,hash), _limit())) Updated?.Invoke(this,EventArgs.Empty);
+            if (string.IsNullOrEmpty(text) && bitmapCopy is null && string.IsNullOrEmpty(html) && string.IsNullOrEmpty(rtf)) return;
+            Enqueue(new ClipboardSnapshot(text,html,rtf,bitmapCopy,width,height,DateTimeOffset.Now));
         }
-        catch { }
+        catch(Exception ex){DiagnosticLog.Write("clipboard","capture.snapshot.failed",ex.Message,"Warning");}
+    }
+    private void Enqueue(ClipboardSnapshot snapshot)
+    {
+        lock(_writeQueueLock)
+        {
+            _writeTail=_writeTail.ContinueWith(_=>Persist(snapshot),CancellationToken.None,
+                TaskContinuationOptions.None,TaskScheduler.Default);
+        }
+    }
+    private void Persist(ClipboardSnapshot snapshot)
+    {
+        if(_lifetime.IsCancellationRequested)return;
+        try
+        {
+            byte[]? png=null;
+            if(snapshot.Bitmap is not null)
+                png=EncodePng(snapshot.Bitmap);
+            if(_lifetime.IsCancellationRequested)return;
+            var kind=png is not null?"image":(snapshot.Html is not null||snapshot.Rtf is not null?"rich-text":"text");
+            var preview=png is not null?$"图片 {snapshot.Width}×{snapshot.Height}":NormalizePreview(snapshot.Text??StripMarkup(snapshot.Html??snapshot.Rtf??""));
+            var hash=ComputeHash(snapshot.Text,snapshot.Html,snapshot.Rtf,png);
+            if(ShouldIgnoreRestored(hash))return;
+            if(_db.AddClipboard(new(0,kind,preview,snapshot.Text,snapshot.Html,snapshot.Rtf,png,false,snapshot.CreatedAt,hash),_limit()))
+                Updated?.Invoke(this,EventArgs.Empty);
+        }
+        catch(Exception ex){DiagnosticLog.Write("clipboard","capture.persist.failed",ex.Message,"Warning");}
     }
     public void Restore(ClipboardEntry item)
     {
@@ -61,14 +90,29 @@ internal sealed class ClipboardHistoryService : IDisposable
         {
             using var ms = new MemoryStream(item.ImagePng); var image = new BitmapImage(); image.BeginInit(); image.CacheOption=BitmapCacheOption.OnLoad; image.StreamSource=ms; image.EndInit(); image.Freeze(); data.SetData(DataFormats.Bitmap,image);
         }
-        _suppress += 2; Clipboard.SetDataObject(data,true);
+        lock(_restoreLock){_restoredHash=item.Hash;_restoreSuppressionUntil=DateTimeOffset.UtcNow.AddSeconds(3);}
+        Clipboard.SetDataObject(data,true);
     }
     private static string? GetString(IDataObject d,string format) => d.GetDataPresent(format) ? d.GetData(format) as string : null;
-    private static string NormalizePreview(string s) => string.Join(' ',s.Replace('\r',' ').Replace('\n',' ').Split(' ',StringSplitOptions.RemoveEmptyEntries)).Trim()[..Math.Min(160,string.Join(' ',s.Replace('\r',' ').Replace('\n',' ').Split(' ',StringSplitOptions.RemoveEmptyEntries)).Trim().Length)];
-    private static string StripMarkup(string s) => System.Text.RegularExpressions.Regex.Replace(s,"<[^>]+>"," ");
-    private static string bitmapWidth(byte[] png)
+    private bool ShouldIgnoreRestored(string hash)
     {
-        try { using var ms=new MemoryStream(png); var d=BitmapDecoder.Create(ms,BitmapCreateOptions.DelayCreation,BitmapCacheOption.None); return $"{d.Frames[0].PixelWidth}×{d.Frames[0].PixelHeight}"; } catch { return ""; }
+        lock(_restoreLock)
+        {
+            if(_restoredHash is null||DateTimeOffset.UtcNow>_restoreSuppressionUntil){_restoredHash=null;return false;}
+            if(!string.Equals(_restoredHash,hash,StringComparison.Ordinal))return false;
+            _restoredHash=null;return true;
+        }
+    }
+    private static string NormalizePreview(string s)
+    {
+        var normalized=string.Join(' ',s.Replace('\r',' ').Replace('\n',' ').Split(' ',StringSplitOptions.RemoveEmptyEntries)).Trim();
+        return normalized[..Math.Min(160,normalized.Length)];
+    }
+    private static string StripMarkup(string s) => System.Text.RegularExpressions.Regex.Replace(s,"<[^>]+>"," ");
+    internal static byte[] EncodePng(BitmapSource bitmap)
+    {
+        var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var ms=new MemoryStream();encoder.Save(ms);return ms.ToArray();
     }
     private static string ComputeHash(params object?[] values)
     {
@@ -80,5 +124,12 @@ internal sealed class ClipboardHistoryService : IDisposable
         }
         sha.TransformFinalBlock(Array.Empty<byte>(),0,0); return Convert.ToHexString(sha.Hash!);
     }
-    public void Dispose() { NativeMethods.RemoveClipboardFormatListener(_source.Handle); _source.RemoveHook(WndProc); _source.Dispose(); }
+    public void Dispose()
+    {
+        _lifetime.Cancel();Updated=null;NativeMethods.RemoveClipboardFormatListener(_source.Handle);
+        _source.RemoveHook(WndProc);_source.Dispose();
+    }
+
+    private sealed record ClipboardSnapshot(string? Text,string? Html,string? Rtf,BitmapSource? Bitmap,
+        int Width,int Height,DateTimeOffset CreatedAt);
 }

@@ -8,7 +8,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-`v1.1.5` 的源码已经公开。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
+`v1.1.6` 的源码已经公开。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
 
 当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
 
@@ -42,6 +42,12 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 - 自动滚动不能保证适配任意软件；微信聊天建议从手动模式开始。
 - 选区应避开标题栏、联系人列表、输入框和滚动条边缘；整屏图片、大片空白或重复气泡可能缺少可辨识特征。
 - 本版未引入 Windows Graphics Capture、ORB/光流、流式超大图或新的微信专用匹配参数。
+
+## 历史剪贴板 1.1.6
+
+历史窗口先绘制工具栏、表头和加载提示，再从后台读取轻量列表；列表查询不再加载完整文字、HTML、RTF 或图片 BLOB。图片缩略图只在对应行滚动到可见区域时按需读取和解码，因此即使数据库包含大量截图，也不会在按下 `Ctrl+~` 后长时间显示空白窗口。
+
+搜索输入采用短暂防抖，收藏、删除、清空和恢复内容均在需要时后台读取；连续按快捷键只会激活同一个历史窗口。复制图片时，界面线程只制作可跨线程使用的像素快照，PNG 压缩、哈希和 SQLite 写入按顺序在后台完成，降低复制大图造成的界面停顿。
 
 ## 数据与隐私
 
@@ -79,7 +85,7 @@ dotnet test .\tests\Gtools.Tests\Gtools.Tests.csproj -c Release --no-build
 dotnet list .\Gtools.sln package --vulnerable --include-transitive
 ```
 
-本地评估目录为 `artifacts\Gtools-1.1.5`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
+本地评估目录为 `artifacts\Gtools-1.1.6`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
 
 诊断启动可使用 `Gtools.exe --test-profile <目录> --diagnostics --show-dashboard`。测试配置不会读写正式 `%LOCALAPPDATA%\Gtools`，也不会修改开机启动设置。请勿公开提交原始诊断日志；日志可能包含本机路径和运行环境信息。
 

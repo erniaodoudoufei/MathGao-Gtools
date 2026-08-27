@@ -100,4 +100,27 @@ public sealed class CoreTests
         }
         finally{Directory.Delete(root,true);}
     }
+
+    [Fact]
+    public void Database_ClipboardSummariesKeepLargePayloadsOutOfTheHistoryList()
+    {
+        var root=Path.Combine(Path.GetTempPath(),"Gtools.Tests",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+        var db=new LocalDatabase(Path.Combine(root,"test.db"));db.Initialize();
+        try
+        {
+            var image=Enumerable.Range(0,4*1024*1024).Select(i=>(byte)(i%251)).ToArray();
+            Assert.True(db.AddClipboard(new(0,"image","图片 2048×1024",null,null,null,image,false,DateTimeOffset.Now,"IMAGE-HASH"),50));
+            Assert.True(db.AddClipboard(new(0,"text","searchable lesson text","searchable lesson text",null,null,null,false,DateTimeOffset.Now,"TEXT-HASH"),50));
+
+            var summaries=db.SearchClipboardSummaries();Assert.Equal(2,summaries.Count);
+            var imageSummary=Assert.Single(summaries.Where(x=>x.Kind=="image"));Assert.True(imageSummary.HasImage);
+            Assert.Equal("图片 2048×1024",imageSummary.Preview);
+            Assert.Single(db.SearchClipboardSummaries("searchable"));
+
+            Assert.Equal(image,db.GetClipboardImage(imageSummary.Id));
+            var restored=db.GetClipboard(imageSummary.Id);Assert.NotNull(restored);Assert.Equal(image,restored!.ImagePng);
+            Assert.Null(db.GetClipboard(long.MaxValue));Assert.Null(db.GetClipboardImage(long.MaxValue));
+        }
+        finally{Directory.Delete(root,true);}
+    }
 }

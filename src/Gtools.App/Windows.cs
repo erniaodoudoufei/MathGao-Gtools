@@ -483,33 +483,132 @@ internal sealed class VocabularyReviewWindow : Window
 
 internal sealed class ClipboardWindow : Window
 {
-    private readonly LocalDatabase _db;private readonly ClipboardHistoryService _service;private readonly DataGrid _grid=new(){AutoGenerateColumns=false,IsReadOnly=true,RowHeight=64};private readonly TextBox _search=new();private readonly IntPtr _returnTo;
-    public ClipboardWindow(LocalDatabase db,ClipboardHistoryService service,IntPtr returnTo)
+    private readonly LocalDatabase _db;private readonly ClipboardHistoryService _service;
+    private readonly DataGrid _grid=new(){AutoGenerateColumns=false,IsReadOnly=true,RowHeight=64,EnableRowVirtualization=true,EnableColumnVirtualization=true};
+    private readonly TextBox _search=new();private readonly TextBlock _status=Ui.Text("正在加载历史记录…",12);
+    private readonly Func<string,int,IReadOnlyList<ClipboardEntrySummary>> _searchHistory;
+    private readonly CancellationTokenSource _lifetime=new();private CancellationTokenSource? _refresh;
+    private readonly IntPtr _returnTo;private int _refreshGeneration;private bool _initialLoadStarted;
+    public ClipboardWindow(LocalDatabase db,ClipboardHistoryService service,IntPtr returnTo,
+        Func<string,int,IReadOnlyList<ClipboardEntrySummary>>? searchHistory=null)
     {
-        _db=db;_service=service;_returnTo=returnTo;Title="Gtools · 历史剪贴板";Width=850;Height=520;WindowStartupLocation=WindowStartupLocation.CenterScreen;Topmost=true;BuildColumns();
-        var root=new DockPanel{Margin=new Thickness(8)};var top=new StackPanel{Orientation=Orientation.Horizontal};_search.Width=300;_search.TextChanged+=(_,_)=>Refresh();top.Children.Add(_search);
-        top.Children.Add(Ui.Button("粘贴",async(_,_)=>await Paste()));top.Children.Add(Ui.Button("收藏/取消",(_,_)=>Favorite()));top.Children.Add(Ui.Button("删除",(_,_)=>Delete()));top.Children.Add(Ui.Button("清空未收藏",(_,_)=>{_db.ClearClipboard();Refresh();}));
+        _db=db;_service=service;_returnTo=returnTo;_searchHistory=searchHistory??db.SearchClipboardSummaries;
+        Title="Gtools · 历史剪贴板";Width=850;Height=520;WindowStartupLocation=WindowStartupLocation.CenterScreen;Topmost=true;BuildColumns();
+        VirtualizingPanel.SetIsVirtualizing(_grid,true);VirtualizingPanel.SetVirtualizationMode(_grid,VirtualizationMode.Recycling);ScrollViewer.SetCanContentScroll(_grid,true);
+        var root=new DockPanel{Margin=new Thickness(8)};var top=new StackPanel{Orientation=Orientation.Horizontal};_search.Width=300;_search.TextChanged+=(_,_)=>QueueRefresh(180);top.Children.Add(_search);
+        top.Children.Add(Ui.Button("粘贴",async(_,_)=>await Paste()));top.Children.Add(Ui.Button("收藏/取消",async(_,_)=>await Favorite()));top.Children.Add(Ui.Button("删除",async(_,_)=>await Delete()));top.Children.Add(Ui.Button("清空未收藏",async(_,_)=>await MutateAsync(_db.ClearClipboard,"正在清理未收藏记录…")));
         top.Children.Add(Ui.Button(service.Paused?"继续记录":"暂停记录",(s,_)=>{service.Paused=!service.Paused;((Button)s).Content=service.Paused?"继续记录":"暂停记录";}));DockPanel.SetDock(top,Dock.Top);root.Children.Add(top);
-        _grid.MouseDoubleClick+=async(_,_)=>await Paste();_grid.KeyDown+=async(_,e)=>{if(e.Key==Key.Enter){e.Handled=true;await Paste();}};root.Children.Add(_grid);Content=root;Loaded+=(_,_)=>{Refresh();_search.Focus();};
-        _service.Updated+=OnUpdated;Closed+=(_,_)=>_service.Updated-=OnUpdated;
+        _status.Foreground=Brushes.DimGray;DockPanel.SetDock(_status,Dock.Bottom);root.Children.Add(_status);
+        _grid.LoadingRow+=(_,e)=>{if(e.Row.Item is ClipboardViewRow row)_=row.EnsureThumbnailAsync(_db,_lifetime.Token);};
+        _grid.MouseDoubleClick+=async(_,_)=>await Paste();_grid.KeyDown+=async(_,e)=>{if(e.Key==Key.Enter){e.Handled=true;await Paste();}};root.Children.Add(_grid);Content=root;
+        _search.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Down&&_grid.Items.Count>0){_grid.SelectedIndex=Math.Max(0,_grid.SelectedIndex);_grid.Focus();_grid.ScrollIntoView(_grid.SelectedItem);e.Handled=true;}};
+        KeyDown+=(_,e)=>{if(e.Key==Key.Escape)Close();};Loaded+=(_,_)=>_search.Focus();
+        // ContentRendered runs only after WPF has painted the toolbar, headers and loading text. The
+        // database query therefore cannot produce the empty white client area seen in older builds.
+        ContentRendered+=(_,_)=>{if(_initialLoadStarted)return;_initialLoadStarted=true;QueueRefresh(0);};
+        _service.Updated+=OnUpdated;Closed+=(_,_)=>{_service.Updated-=OnUpdated;_refresh?.Cancel();_lifetime.Cancel();};
     }
-    private void OnUpdated(object? s,EventArgs e)=>Dispatcher.Invoke(Refresh);
+    internal void FocusSearch(){Activate();_search.Focus();_search.SelectAll();}
+    internal string StatusText=>_status.Text;internal int VisibleRowCount=>_grid.Items.Count;
+    private void OnUpdated(object? s,EventArgs e)
+    {
+        if(_lifetime.IsCancellationRequested)return;
+        _=Dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>QueueRefresh(100)));
+    }
     private void BuildColumns()
     {
         _grid.Columns.Add(new DataGridTextColumn{Header="★",Binding=new System.Windows.Data.Binding(nameof(ClipboardViewRow.Favorite)),Width=36});
         var imageFactory=new FrameworkElementFactory(typeof(Image));imageFactory.SetBinding(Image.SourceProperty,new System.Windows.Data.Binding(nameof(ClipboardViewRow.Thumbnail)));imageFactory.SetValue(Image.StretchProperty,Stretch.Uniform);var template=new DataTemplate{VisualTree=imageFactory};_grid.Columns.Add(new DataGridTemplateColumn{Header="预览",CellTemplate=template,Width=100});
         _grid.Columns.Add(new DataGridTextColumn{Header="内容",Binding=new System.Windows.Data.Binding(nameof(ClipboardViewRow.Preview)),Width=new DataGridLength(1,DataGridLengthUnitType.Star)});_grid.Columns.Add(new DataGridTextColumn{Header="类型",Binding=new System.Windows.Data.Binding(nameof(ClipboardViewRow.Kind)),Width=80});_grid.Columns.Add(new DataGridTextColumn{Header="时间",Binding=new System.Windows.Data.Binding(nameof(ClipboardViewRow.Time)),Width=145});
     }
-    private void Refresh(){try{_grid.ItemsSource=_db.SearchClipboard(_search.Text).Select(x=>new ClipboardViewRow(x)).ToArray();Title=$"Gtools · 历史剪贴板 · {_db.DatabaseSizeBytes/1024d/1024:0.0} MB";}catch{_grid.ItemsSource=Array.Empty<ClipboardViewRow>();}}
-    private async Task Paste(){if(_grid.SelectedItem is not ClipboardViewRow row)return;_service.Restore(row.Entry);Close();await Task.Delay(100);NativeMethods.ShowWindow(_returnTo,NativeMethods.SW_RESTORE);NativeMethods.SetForegroundWindow(_returnTo);await Task.Delay(80);NativeMethods.Paste();}
-    private void Favorite(){if(_grid.SelectedItem is ClipboardViewRow row){_db.SetClipboardFavorite(row.Entry.Id,!row.Entry.IsFavorite);Refresh();}}
-    private void Delete(){if(_grid.SelectedItem is ClipboardViewRow row){_db.DeleteClipboard(row.Entry.Id);Refresh();}}
+    private void QueueRefresh(int delayMilliseconds)
+    {
+        if(_lifetime.IsCancellationRequested)return;
+        _refresh?.Cancel();var cts=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);_refresh=cts;
+        var generation=++_refreshGeneration;var query=_search.Text;if(_grid.ItemsSource is null)_status.Text="正在加载历史记录…";
+        _=RefreshAsync(query,delayMilliseconds,generation,cts);
+    }
+    private async Task RefreshAsync(string query,int delayMilliseconds,int generation,CancellationTokenSource owner)
+    {
+        try
+        {
+            if(delayMilliseconds>0)await Task.Delay(delayMilliseconds,owner.Token);
+            var selectedId=(_grid.SelectedItem as ClipboardViewRow)?.Id;
+            if(_grid.ItemsSource is not null)_status.Text="正在更新历史记录…";
+            var summaries=await Task.Run(()=>_searchHistory(query,100),owner.Token);
+            owner.Token.ThrowIfCancellationRequested();if(generation!=_refreshGeneration)return;
+            var rows=summaries.Select(x=>new ClipboardViewRow(x)).ToArray();_grid.ItemsSource=rows;
+            if(selectedId is not null)
+            {
+                var selected=rows.FirstOrDefault(x=>x.Id==selectedId.Value);if(selected is not null){_grid.SelectedItem=selected;_grid.ScrollIntoView(selected);}
+            }
+            Title=$"Gtools · 历史剪贴板 · {_db.DatabaseSizeBytes/1024d/1024:0.0} MB";
+            _status.Text=rows.Length==0?(string.IsNullOrWhiteSpace(query)?"还没有剪贴板记录。":"没有匹配的历史记录。"):$"显示 {rows.Length} 条 · 图片缩略图按可见行加载";
+            _status.Foreground=Brushes.DimGray;
+        }
+        catch(OperationCanceledException) when(owner.IsCancellationRequested){}
+        catch(Exception ex)
+        {
+            if(!_lifetime.IsCancellationRequested){_grid.ItemsSource=Array.Empty<ClipboardViewRow>();_status.Text="加载失败："+ex.Message;_status.Foreground=Brushes.Firebrick;DiagnosticLog.Write("clipboard","history.load.failed",ex.Message,"Error");}
+        }
+        finally{if(ReferenceEquals(_refresh,owner))_refresh=null;owner.Dispose();}
+    }
+    private async Task Paste()
+    {
+        if(_grid.SelectedItem is not ClipboardViewRow row)return;
+        try
+        {
+            _status.Text="正在恢复所选内容…";var entry=await Task.Run(()=>_db.GetClipboard(row.Id),_lifetime.Token);
+            if(entry is null){QueueRefresh(0);return;}_service.Restore(entry);Close();await Task.Delay(100);
+            NativeMethods.ShowWindow(_returnTo,NativeMethods.SW_RESTORE);NativeMethods.SetForegroundWindow(_returnTo);await Task.Delay(80);NativeMethods.Paste();
+        }
+        catch(OperationCanceledException) when(_lifetime.IsCancellationRequested){}
+        catch(Exception ex){_status.Text="恢复失败："+ex.Message;_status.Foreground=Brushes.Firebrick;DiagnosticLog.Write("clipboard","history.restore.failed",ex.Message,"Error");}
+    }
+    private async Task Favorite(){if(_grid.SelectedItem is ClipboardViewRow row)await MutateAsync(()=>_db.SetClipboardFavorite(row.Id,!row.IsFavorite),"正在更新收藏…");}
+    private async Task Delete(){if(_grid.SelectedItem is ClipboardViewRow row)await MutateAsync(()=>_db.DeleteClipboard(row.Id),"正在删除…");}
+    private async Task MutateAsync(Action mutation,string status)
+    {
+        try{_status.Text=status;await Task.Run(mutation,_lifetime.Token);QueueRefresh(0);}
+        catch(OperationCanceledException) when(_lifetime.IsCancellationRequested){}
+        catch(Exception ex){_status.Text="操作失败："+ex.Message;_status.Foreground=Brushes.Firebrick;DiagnosticLog.Write("clipboard","history.mutate.failed",ex.Message,"Error");}
+    }
 }
 
-internal sealed class ClipboardViewRow
+internal sealed class ClipboardViewRow : System.ComponentModel.INotifyPropertyChanged
 {
-    public ClipboardEntry Entry{get;}public string Favorite=>Entry.IsFavorite?"★":"";public string Preview=>Entry.Preview;public string Kind=>Entry.Kind;public string Time=>Entry.CreatedAt.LocalDateTime.ToString("MM-dd HH:mm");public BitmapSource? Thumbnail{get;}
-    public ClipboardViewRow(ClipboardEntry entry){Entry=entry;if(entry.ImagePng is not null)try{using var ms=new MemoryStream(entry.ImagePng);var b=new BitmapImage();b.BeginInit();b.CacheOption=BitmapCacheOption.OnLoad;b.DecodePixelWidth=96;b.StreamSource=ms;b.EndInit();b.Freeze();Thumbnail=b;}catch{}}
+    private static readonly SemaphoreSlim ThumbnailGate=new(2,2);
+    private readonly ClipboardEntrySummary _entry;private BitmapSource? _thumbnail;private int _thumbnailState;
+    public ClipboardViewRow(ClipboardEntrySummary entry){_entry=entry;}
+    public long Id=>_entry.Id;public bool IsFavorite=>_entry.IsFavorite;public string Favorite=>IsFavorite?"★":"";
+    public string Preview=>_entry.Preview;public string Kind=>_entry.Kind;public string Time=>_entry.CreatedAt.LocalDateTime.ToString("MM-dd HH:mm");
+    public BitmapSource? Thumbnail{get=>_thumbnail;private set{_thumbnail=value;PropertyChanged?.Invoke(this,new(nameof(Thumbnail)));}}
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+
+    public async Task EnsureThumbnailAsync(LocalDatabase db,CancellationToken token)
+    {
+        if(!_entry.HasImage||Interlocked.CompareExchange(ref _thumbnailState,1,0)!=0)return;
+        try
+        {
+            await ThumbnailGate.WaitAsync(token);
+            try
+            {
+                var image=await Task.Run(()=>DecodeThumbnail(db.GetClipboardImage(Id)),token);token.ThrowIfCancellationRequested();Thumbnail=image;
+            }
+            finally{ThumbnailGate.Release();}
+        }
+        catch(OperationCanceledException) when(token.IsCancellationRequested){}
+        catch(Exception ex){DiagnosticLog.Write("clipboard","thumbnail.load.failed",ex.Message,"Warning",data:new Dictionary<string,object?>{{"entryId",Id}});}
+        finally{if(_thumbnail is null)Interlocked.Exchange(ref _thumbnailState,0);}
+    }
+
+    internal static BitmapSource? DecodeThumbnail(byte[]? png,int decodePixelWidth=96)
+    {
+        if(png is null||png.Length==0)return null;
+        using var ms=new MemoryStream(png);var image=new BitmapImage();image.BeginInit();
+        image.CacheOption=BitmapCacheOption.OnLoad;image.CreateOptions=BitmapCreateOptions.IgnoreColorProfile;
+        image.DecodePixelWidth=Math.Clamp(decodePixelWidth,32,512);image.StreamSource=ms;image.EndInit();image.Freeze();return image;
+    }
 }
 
 /// <summary>
