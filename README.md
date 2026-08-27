@@ -4,16 +4,15 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 源码采用 [MIT](LICENSE) 许可证。第三方组件按各自许可证分发，详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) 和 [ThirdPartyLicenses/manifest.json](ThirdPartyLicenses/manifest.json)。
 
-## 下载与安装
+## 二进制发布状态
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-1. 从 [GitHub Releases](https://github.com/erniaodoudoufei/MathGao-Gtools/releases) 下载 `MathGao-Gtools-v1.1.5-win-x64.zip` 及同名 `.sha256` 文件。
-2. 用 `Get-FileHash .\MathGao-Gtools-v1.1.5-win-x64.zip -Algorithm SHA256` 核对校验值。
-3. 将 ZIP **完整解压到同一个目录**。不要只复制 `Gtools.exe`，OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
-4. 运行解压目录中的 `Gtools.exe`。
+`v1.1.5` 的源码已经公开。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
 
-本项目当前没有代码签名证书。Windows SmartScreen 可能显示“未知发布者”；请先确认文件来自上述 GitHub Release 且 SHA-256 一致，再决定是否继续运行。更新时先退出 Gtools，再用新版本完整目录替换程序文件；用户数据不在程序目录中，不会随替换丢失。
+当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
+
+本项目当前没有代码签名证书。未来公开 Windows 包时，Windows SmartScreen 可能显示“未知发布者”；届时请先确认文件来自本仓库 GitHub Release 且 SHA-256 一致，再决定是否继续运行。更新时先退出 Gtools，再用新版本完整目录替换程序文件；用户数据不在程序目录中，不会随替换丢失。
 
 ## 功能
 
@@ -61,8 +60,15 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 ```powershell
 .\build.ps1 -Configuration Release
-.\build.ps1 -Configuration Release -Publish
 ```
+
+普通 `-Publish` 会在检测到未解决的第三方再分发授权时主动停止。只有在你已自行确认相关权利、且仅用于本机评估时，才可显式运行：
+
+```powershell
+.\build.ps1 -Configuration Release -Publish -AllowUnresolvedRedistribution
+```
+
+该开关不会授予任何许可证或再分发权，生成的验收摘要会标记为 `local-evaluation-only-unresolved-license`，不得据此公开上传构建产物。
 
 也可以分别执行：
 
@@ -73,7 +79,7 @@ dotnet test .\tests\Gtools.Tests\Gtools.Tests.csproj -c Release --no-build
 dotnet list .\Gtools.sln package --vulnerable --include-transitive
 ```
 
-本地发布目录为 `artifacts\Gtools-1.1.5`，入口仍为 `Gtools.exe`。发布包较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成约 500MB 的发布 ZIP。
+本地评估目录为 `artifacts\Gtools-1.1.5`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
 
 诊断启动可使用 `Gtools.exe --test-profile <目录> --diagnostics --show-dashboard`。测试配置不会读写正式 `%LOCALAPPDATA%\Gtools`，也不会修改开机启动设置。请勿公开提交原始诊断日志；日志可能包含本机路径和运行环境信息。
 

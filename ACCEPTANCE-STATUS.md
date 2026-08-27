@@ -36,4 +36,4 @@
 ## 发布阻断项
 
 - `PaddleOCR.dll` 的再分发授权需要发布者独立确认；详见 `THIRD-PARTY-NOTICES.md`。
-- GitHub Actions 通过、Release 附件可下载且校验值一致后，才能把草稿 Release 切换为正式发布。
+- GitHub Actions 已通过；Windows 二进制附件在上述授权问题解决前不会上传，`v1.1.5` 仅发布源码标签并保留无附件草稿 Release。

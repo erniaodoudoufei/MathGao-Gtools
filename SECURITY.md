@@ -20,5 +20,5 @@ https://github.com/erniaodoudoufei/MathGao-Gtools/security/advisories/new
 
 - OCR 默认在本机 Worker 中运行；翻译和自动查词属于可选网络功能，隐私边界见 README。
 - OpenAI 兼容接口 Key 使用当前 Windows 用户的 DPAPI 加密，但有权以同一 Windows 用户身份运行的进程仍可能访问该用户可访问的数据。
-- 本项目尚未进行代码签名。只从 GitHub Release 下载，并在运行前核对随附 SHA-256。
+- 本项目尚未进行代码签名。Windows 二进制附件当前因第三方再分发授权未确认而暂缓公开；未来附件可用时，只从本仓库 GitHub Release 下载，并在运行前核对随附 SHA-256。
 - 第三方二进制和模型受其上游许可证及安全维护周期约束，清单见 `ThirdPartyLicenses/manifest.json`。

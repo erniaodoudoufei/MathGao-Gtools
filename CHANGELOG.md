@@ -33,12 +33,13 @@
 
 - 发布 ZIP 不再携带长截图不使用的 OpenCV FFmpeg Video I/O DLL。
 - 发布包只携带脱敏验收摘要，不携带原始诊断日志、路径或进程信息。
-- Release 附带 Windows x64 ZIP 和独立 SHA-256 文件。
+- 构建脚本可生成 Windows x64 ZIP 和独立 SHA-256，并在第三方再分发授权未解决时默认阻止发布构建。
+- `PaddleOCR.dll` 的公开再分发授权尚未确认，因此 `v1.1.5` 首发只公开源码，暂不上传 Windows ZIP。
 
 ### Known limitations
 
 - 微信版本更新、动态内容、懒加载/虚拟列表和任意软件自动滚动仍可能影响长截图适配。
-- `PaddleOCR.dll` 的第三方再分发授权需发布者独立确认，详见第三方 notices。
+- `PaddleOCR.dll` 的第三方再分发授权需发布者独立确认，详见第三方 notices；解决前不得公开上传本机构建包。
 
 ## [1.1.4] - 2026-08-23
 
