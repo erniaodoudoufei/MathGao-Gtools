@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "generatedFor": "MathGao-Gtools 1.1.5",
+  "components": [
+    {
+      "name": "PaddleOCRSharp managed wrapper",
+      "version": "6.2.0",
+      "license": "Apache-2.0 (C# wrapper only)",
+      "licenseFile": "PaddleOCRSharp-LICENSE.txt",
+      "source": "https://github.com/raoyutian/PaddleOCRSharp"
+    },
+    {
+      "name": "PaddleOCR.dll community native component",
+      "version": "bundled by PaddleOCRSharp 6.2.0",
+      "license": "NOASSERTION",
+      "licenseFile": "PaddleOCR-dll-NOASSERTION.txt",
+      "files": ["Workers/Gtools.OcrWorker/PaddleOCR.dll"],
+      "publicRedistributionBlocked": true
+    },
+    {
+      "name": "Paddle Runtime and Paddle Inference",
+      "version": "3.3.0.1",
+      "license": "Apache-2.0",
+      "licenseFile": "Apache-2.0.txt",
+      "source": "https://github.com/PaddlePaddle/Paddle"
+    },
+    {
+      "name": "PaddleOCR models and dictionaries",
+      "version": "PP-OCRv5/PP-OCRv6 bundle",
+      "license": "Apache-2.0",
+      "licenseFile": "Apache-2.0.txt",
+      "source": "https://github.com/PaddlePaddle/PaddleOCR"
+    },
+    {
+      "name": "Intel MKLML and Intel OpenMP runtime",
+      "version": "bundled by Paddle Runtime 3.3.0.1",
+      "license": "Intel Simplified Software License",
+      "licenseFile": "Intel-Simplified-Software-License.txt",
+      "files": ["mklml.dll", "libiomp5md.dll"]
+    },
+    {
+      "name": "oneDNN and oneTBB",
+      "version": "bundled by Paddle Runtime 3.3.0.1",
+      "license": "Apache-2.0",
+      "licenseFile": "Apache-2.0.txt",
+      "files": ["mkldnn.dll", "tbb12.dll", "tbbmalloc.dll", "tbbmalloc_proxy.dll"]
+    },
+    {
+      "name": "yaml-cpp",
+      "version": "bundled by Paddle Runtime 3.3.0.1",
+      "license": "MIT",
+      "licenseFile": "yaml-cpp-MIT.txt",
+      "files": ["yaml-cpp.dll"]
+    },
+    {
+      "name": "Microsoft Visual C++ Runtime",
+      "version": "2015-2022 family",
+      "license": "Microsoft Visual Studio redistribution terms",
+      "licenseFile": "Microsoft-Visual-Cpp-Runtime-Notice.txt"
+    },
+    {
+      "name": "OpenCvSharp and OpenCV",
+      "version": "4.10.0.20240616 / 4.10",
+      "license": "Apache-2.0",
+      "licenseFile": "Apache-2.0.txt",
+      "source": "https://github.com/shimat/opencvsharp"
+    },
+    {
+      "name": "SkiaSharp managed and native assets",
+      "version": "2.88.8",
+      "license": "MIT / BSD-style and bundled third-party notices",
+      "licenseFile": "SkiaSharp-LICENSE.txt",
+      "noticeFile": "SkiaSharp-THIRD-PARTY-NOTICES.txt"
+    },
+    {
+      "name": "Microsoft.Data.Sqlite, System libraries and .NET components",
+      "version": "locked by project.assets.json",
+      "license": "MIT",
+      "licenseFile": "DotNet-MIT.txt"
+    },
+    {
+      "name": "SQLitePCLRaw",
+      "version": "2.1.12",
+      "license": "Apache-2.0",
+      "licenseFile": "Apache-2.0.txt"
+    },
+    {
+      "name": "SQLite native engine",
+      "version": "bundled by SQLitePCLRaw 2.1.12",
+      "license": "Public Domain",
+      "licenseFile": "SQLite-Public-Domain.txt"
+    }
+  ],
+  "excludedFromRelease": [
+    {
+      "pattern": "opencv_videoio_ffmpeg*.dll",
+      "reason": "LongShot uses static image decode/matching only; the FFmpeg Video I/O plugin is removed and verified absent."
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+Microsoft Visual C++ Runtime notice
+
+The Paddle Runtime package includes Microsoft Visual C++ Runtime files such as
+msvcp140*.dll, vcruntime140*.dll, concrt140.dll, vcomp140.dll, vcamp140.dll and
+vccorlib140.dll. Their use and redistribution are governed by the applicable
+Microsoft Visual Studio / Microsoft Visual C++ Redistributable license terms;
+they are not licensed by MathGao-Gtools's MIT license.
+
+Current Microsoft license directory:
+https://visualstudio.microsoft.com/license-terms/
+
+This notice identifies the governing terms and is not a substitute for a
+redistribution right. The publisher is responsible for ensuring that the
+runtime files were obtained and redistributed under an applicable Microsoft
+license.

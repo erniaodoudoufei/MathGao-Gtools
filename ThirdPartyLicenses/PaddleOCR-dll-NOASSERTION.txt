@@ -1,0 +1,17 @@
+PaddleOCR.dll redistribution status
+
+The PaddleOCRSharp 6.2.0 NuGet package describes PaddleOCR.dll as a
+"third-party free community edition" component. The PaddleOCRSharp upstream
+license and README state that the Apache-2.0 grant for the C# wrapper does not
+grant rights for third-party DLL files and that users/distributors must obtain
+the applicable permission from the original rights holder.
+
+Accordingly, MathGao-Gtools records the license for PaddleOCR.dll as
+NOASSERTION. This notice is not a license grant and does not resolve whether
+the file may be publicly redistributed. A public binary release containing
+this DLL must remain blocked until redistribution permission is independently
+confirmed, or the component is replaced/omitted.
+
+Upstream references:
+https://github.com/raoyutian/PaddleOCRSharp
+https://www.nuget.org/packages/PaddleOCRSharp/6.2.0

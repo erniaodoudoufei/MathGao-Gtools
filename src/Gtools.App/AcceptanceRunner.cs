@@ -1,0 +1,56 @@
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Reflection;
+using System.Text.Json;
+using Gtools.Core;
+
+namespace Gtools.App;
+
+internal sealed class AcceptanceRunner(LocalDatabase database,DesktopModuleRegistry modules,OcrWorkerClient ocr)
+{
+    public async Task<AcceptanceReport> RunAsync(string? reportPath,CancellationToken token=default)
+    {
+        var started=DateTimeOffset.Now;var checks=new List<AcceptanceCheck>();
+        await Check("profile.isolation","测试配置隔离",()=>
+        {
+            var actual=Path.GetFullPath(AppPaths.Root);var production=Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Gtools"));
+            return Task.FromResult(!actual.Equals(production,StringComparison.OrdinalIgnoreCase)&&!actual.Equals(Path.GetPathRoot(actual),StringComparison.OrdinalIgnoreCase));
+        },checks);
+        await Check("diagnostics.write","结构化诊断日志",()=>{DiagnosticLog.Write("acceptance","write.probe","诊断写入探针");return Task.FromResult(DiagnosticLog.CurrentPath is not null&&File.Exists(DiagnosticLog.CurrentPath));},checks);
+        await Check("database.persistence","生词与剪贴板持久化",()=>Task.FromResult(TestDatabase()),checks);
+        await Check("workers.available","隔离 Worker 可定位",()=>Task.FromResult(new[]{"Gtools.OcrWorker","Gtools.LongShotWorker"}.All(x=>File.Exists(WorkerLocator.Find(x)))),checks);
+        await Check("modules.health","模块注册表健康状态",async()=>{var health=await modules.GetHealthAsync(token);return modules.Modules.Count==7&&health.Values.All(x=>x.Health!=ModuleHealth.Failed);},checks);
+        await Check("ocr.ipc","PaddleOCR 命名管道与中英模型",async()=>
+        {
+            var response=await ocr.RecognizeAsync(CreateOcrProbe(),token);return response.Success&&response.Text.Contains("12345",StringComparison.OrdinalIgnoreCase);
+        },checks);
+        var version=Assembly.GetExecutingAssembly().GetName().Version?.ToString()??"unknown";
+        var report=new AcceptanceReport(version,AppPaths.Root,started,DateTimeOffset.Now,checks.All(x=>x.Passed),checks.ToArray(),DiagnosticLog.CurrentPath,
+        ["真实微信/QQ 长截图需要用户预先打开非敏感测试聊天后执行","OpenAI Provider 仅在用户已配置 Key 时联网测试","网页、PDF、OneNote 自动长截图不在本轮范围"]);
+        var target=reportPath??Path.Combine(AppPaths.Logs,$"acceptance-{DateTime.Now:yyyyMMdd-HHmmss}.json");Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(target))!);
+        await File.WriteAllTextAsync(target,JsonSerializer.Serialize(report,GtoolsJson.Options),token);return report;
+    }
+
+    private bool TestDatabase()
+    {
+        var marker="acceptance-"+Guid.NewGuid().ToString("N");var id=database.AddVocabulary(marker,"验收","Gtools acceptance","test","isolated");
+        var vocab=database.SearchVocabulary(marker).Any(x=>x.Id==id&&x.Meaning=="验收");database.DeleteVocabulary(id);
+        var clip=new ClipboardEntry(0,"text",marker,marker,"<b>Gtools</b>","{\\rtf1 Gtools}",null,false,DateTimeOffset.Now,marker);
+        var first=database.AddClipboard(clip,500);var duplicate=database.AddClipboard(clip,500);var search=database.SearchClipboard(marker).Any(x=>x.Hash==marker);
+        foreach(var x in database.SearchClipboard(marker))database.DeleteClipboard(x.Id);return vocab&&first&&!duplicate&&search;
+    }
+
+    private static byte[] CreateOcrProbe()
+    {
+        using var bitmap=new Bitmap(960,240,PixelFormat.Format32bppArgb);using var graphics=Graphics.FromImage(bitmap);graphics.Clear(Color.White);
+        using var font=new System.Drawing.Font("Arial",64,System.Drawing.FontStyle.Bold,System.Drawing.GraphicsUnit.Pixel);graphics.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        graphics.DrawString("Gtools OCR 12345",font,Brushes.Black,new PointF(28,70));using var stream=new MemoryStream();bitmap.Save(stream,ImageFormat.Png);return stream.ToArray();
+    }
+
+    private static async Task Check(string id,string name,Func<Task<bool>> action,List<AcceptanceCheck> output)
+    {
+        var sw=Stopwatch.StartNew();try{var passed=await action();output.Add(new(id,name,passed,passed?"通过":"返回未通过",sw.Elapsed));DiagnosticLog.Write("acceptance","check.completed",$"{name}: {(passed?"PASS":"FAIL")}",passed?"Info":"Error",data:new Dictionary<string,object?>{{"id",id},{"elapsedMs",sw.ElapsedMilliseconds}});}
+        catch(Exception ex){output.Add(new(id,name,false,ex.ToString(),sw.Elapsed));DiagnosticLog.Write("acceptance","check.failed",ex.ToString(),"Error",data:new Dictionary<string,object?>{{"id",id}});}
+    }
+}

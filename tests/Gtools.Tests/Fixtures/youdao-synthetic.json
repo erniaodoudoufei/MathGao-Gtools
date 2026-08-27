@@ -1,0 +1,46 @@
+{
+  "ec": {
+    "exam_type": [
+      "CET4",
+      "考研"
+    ],
+    "word": [
+      {
+        "ukphone": "sɪn-uk",
+        "usphone": "sɪn-us",
+        "trs": [
+          {
+            "tr": [
+              {
+                "l": {
+                  "i": [
+                    "n. 合成名词释义"
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "tr": [
+              {
+                "l": {
+                  "i": [
+                    "v. 合成动词释义"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "blng_sents_part": {
+    "sentence-pair": [
+      {
+        "sentence": "A <b>synthetic</b> source sentence.",
+        "sentence-translation": "一条合成测试例句。"
+      }
+    ]
+  }
+}
