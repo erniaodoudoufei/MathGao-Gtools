@@ -16,7 +16,7 @@ namespace Gtools.App;
 internal sealed class DesktopLayerHost : IDisposable
 {
     private const int GwlStyle=-16,GwlExStyle=-20,GwlHwndParent=-8;
-    private const uint SwpNoSize=0x0001,SwpNoMove=0x0002,SwpNoActivate=0x0010,SwpFrameChanged=0x0020,SwpNoOwnerZOrder=0x0200;
+    private const uint SwpNoSize=0x0001,SwpNoMove=0x0002,SwpNoZOrder=0x0004,SwpNoActivate=0x0010,SwpFrameChanged=0x0020,SwpNoOwnerZOrder=0x0200;
     private const int WmDisplayChange=0x007e,WmDpiChanged=0x02e0;
     private const uint GwHwndPrev=3,GwOwner=4;
     private static readonly nint HwndNoTopmost=-2;
@@ -106,17 +106,27 @@ internal sealed class DesktopLayerHost : IDisposable
     internal void MoveToScreenDip(double left,double top)
     {
         if(!_initialized||_disposed)return;
+        // WPF 的 owned popup 在 SourceInitialized/Loaded 期间只修改 Left/Top 时，
+        // Explorer 或 DWM 仍可能把透明 HWND 留在 (0,0)。先同步 WPF 属性，再把
+        // 最终坐标直接提交给真实句柄；后者才是屏幕上实际绘制的位置。
         _window.Left=left;_window.Top=top;
+        var (scaleX,scaleY)=DpiScale();
+        var (x,y)=DesktopLayerGeometry.ScreenDipToPixels(left,top,scaleX,scaleY);
+        if(_windowHandle!=0)
+            Native.SetWindowPos(_windowHandle,0,x,y,0,0,
+                SwpNoSize|SwpNoZOrder|SwpNoActivate|SwpNoOwnerZOrder);
     }
 
     internal (double Left,double Top) GetScreenDipPosition()
     {
-        if(double.IsFinite(_window.Left)&&double.IsFinite(_window.Top))return (_window.Left,_window.Top);
+        // Window.Left/Top 可能只是 WPF 希望的位置；桌面 owner 切换期间它与 HWND
+        // 的真实坐标会短暂不同。持久化时必须以屏幕上实际窗口为准。
         if(_windowHandle!=0&&Native.GetWindowRect(_windowHandle,out var rect))
         {
             var (scaleX,scaleY)=DpiScale();
             return DesktopLayerGeometry.ScreenPixelsToDip(rect.Left,rect.Top,scaleX,scaleY);
         }
+        if(double.IsFinite(_window.Left)&&double.IsFinite(_window.Top))return (_window.Left,_window.Top);
         return (0,0);
     }
 

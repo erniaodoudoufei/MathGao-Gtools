@@ -709,7 +709,7 @@ internal sealed class FloatingDockWindow : Window
     private readonly Button _chevron;
     private readonly DockTheme _theme;
     private readonly DesktopLayerHost _desktopLayer;
-    private bool _restoring,_monitorVisible,_todoEnabled;
+    private bool _monitorVisible,_todoEnabled,_repositionQueued;
     private bool _dragging;
     private System.Drawing.Point _dragCursor;
     private double _dragWindowLeft,_dragWindowTop;
@@ -723,7 +723,7 @@ internal sealed class FloatingDockWindow : Window
         Width=CollapsedWidth;
 
         _desktopLayer=new DesktopLayerHost(this);
-        _desktopLayer.PlacementInvalidated+=(_,_)=>Reposition();
+        _desktopLayer.PlacementInvalidated+=(_,_)=>ScheduleReposition();
 
         _todoScroll=new ScrollViewer{Content=_todoRows,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
         _todoBlock=BuildTodoBlock();
@@ -734,11 +734,29 @@ internal sealed class FloatingDockWindow : Window
         _todoBlock.Visibility=Visibility.Collapsed;_monitorBlock.Visibility=Visibility.Collapsed;
 
         SourceInitialized+=(_,_)=>_desktopLayer.Initialize();
-        Loaded+=(_,_)=>{Reposition();Dispatcher.BeginInvoke(_desktopLayer.ReassertDesktopLayer);};
-        Activated+=(_,_)=>Dispatcher.BeginInvoke(_desktopLayer.ReassertDesktopLayer);
-        IsVisibleChanged+=(_,_)=>{if(IsVisible&&IsLoaded){_desktopLayer.EnsureAttached();Reposition();Dispatcher.BeginInvoke(_desktopLayer.ReassertDesktopLayer);}};
-        SizeChanged+=(_,_)=>{if(IsLoaded)Reposition();};
-        LocationChanged+=(_,_)=>{if(IsLoaded&&!_restoring&&!_desktopLayer.IsAttached)SaveAnchor();};
+        Loaded+=(_,_)=>
+        {
+            // 第一遍尽快恢复位置；第二遍等 SizeToContent 和桌面 owner 都稳定后再校正。
+            // Windows 11 上透明 owned popup 的最终 HWND 坐标可能晚于 Loaded 才确定。
+            Reposition();
+            Dispatcher.BeginInvoke(() =>
+            {
+                _desktopLayer.ReassertDesktopLayer();
+                Reposition();
+            },DispatcherPriority.ContextIdle);
+        };
+        Activated+=(_,_)=>Dispatcher.BeginInvoke(() =>
+        {
+            _desktopLayer.ReassertDesktopLayer();
+            Reposition();
+        },DispatcherPriority.ContextIdle);
+        IsVisibleChanged+=(_,_)=>
+        {
+            if(!IsVisible||!IsLoaded)return;
+            _desktopLayer.EnsureAttached();
+            ScheduleReposition();
+        };
+        SizeChanged+=(_,_)=>ScheduleReposition();
         _timer.Tick+=(_,_)=>
         {
             var s=_metrics.Sample();
@@ -777,7 +795,7 @@ internal sealed class FloatingDockWindow : Window
         if(_monitorVisible||TodoVisible)
         {
             if(!IsVisible)Show();
-            Reposition();
+            ScheduleReposition();
         }
         else if(IsVisible)Hide();
     }
@@ -802,23 +820,28 @@ internal sealed class FloatingDockWindow : Window
 
     private double AboveHeight=>TodoVisible?_todoBlock.ActualHeight+BlockGap:0;
 
-    // 赋值 Left 会同步触发 LocationChanged，如果那里回写设置，就会在读 Top 之前把存好的值冲掉，
-    // 表现为纵向位置永远记不住。所以恢复期间必须先关掉回写。
+    private void ScheduleReposition()
+    {
+        if(!IsLoaded||_repositionQueued)return;
+        _repositionQueued=true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _repositionQueued=false;
+            Reposition();
+        },DispatcherPriority.Loaded);
+    }
+
+    // 自动布局只能读取锚点，不能回写。位置只在用户拖动完成后保存；否则启动时
+    // Explorer 的瞬时 (0,0) 或 SizeToContent 的中间尺寸会污染原本正确的右下角坐标。
     private void Reposition()
     {
         if(!IsLoaded)return;
         _desktopLayer.EnsureAttached();
-        _restoring=true;
-        try
-        {
-            var work=SystemParameters.WorkArea;
-            var (left,top)=FloatingDockLayout.Resolve(_settings.MonitorLeft,_settings.MonitorTop,AboveHeight,
-                ActualWidth>0?ActualWidth:Width,ActualHeight>0?ActualHeight:Height,
-                new DesktopRect((int)work.Left,(int)work.Top,(int)work.Right,(int)work.Bottom));
-            _desktopLayer.MoveToScreenDip(left,top);
-        }
-        finally{_restoring=false;}
-        SaveAnchor();
+        var work=SystemParameters.WorkArea;
+        var (left,top)=FloatingDockLayout.Resolve(_settings.MonitorLeft,_settings.MonitorTop,AboveHeight,
+            ActualWidth>0?ActualWidth:Width,ActualHeight>0?ActualHeight:Height,
+            new DesktopRect((int)work.Left,(int)work.Top,(int)work.Right,(int)work.Bottom));
+        _desktopLayer.MoveToScreenDip(left,top);
     }
 
     private void SaveAnchor()

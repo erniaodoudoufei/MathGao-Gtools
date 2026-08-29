@@ -66,10 +66,26 @@ public sealed class DesktopLayerTests
     [Fact]
     public void WindowPixelsRoundTripBackToPersistedScreenDip()
     {
-        var point=DesktopLayerGeometry.ScreenPixelsToDip(1800,900,1.5,1.5);
+        var pixels=DesktopLayerGeometry.ScreenDipToPixels(1200,600,1.5,1.5);
+        var point=DesktopLayerGeometry.ScreenPixelsToDip(pixels.X,pixels.Y,1.5,1.5);
 
+        Assert.Equal(1800,pixels.X);
+        Assert.Equal(900,pixels.Y);
         Assert.Equal(1200,point.Left);
         Assert.Equal(600,point.Top);
+    }
+
+    [Theory]
+    [InlineData(2293d,1260d,1d,2293,1260)]
+    [InlineData(1200d,600d,1.25d,1500,750)]
+    [InlineData(-320d,100d,1.5d,-480,150)]
+    [InlineData(100d,50d,2d,200,100)]
+    public void SavedScreenDipBecomesNativeWindowPosition(double left,double top,double scale,int x,int y)
+    {
+        var pixels=DesktopLayerGeometry.ScreenDipToPixels(left,top,scale,scale);
+
+        Assert.Equal(x,pixels.X);
+        Assert.Equal(y,pixels.Y);
     }
 
     [Theory]

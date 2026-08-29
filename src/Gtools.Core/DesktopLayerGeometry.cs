@@ -41,6 +41,15 @@ internal static class DesktopLayerGeometry
         double dpiScaleX,double dpiScaleY) =>
         (screenLeftPixels/SafeScale(dpiScaleX),screenTopPixels/SafeScale(dpiScaleY));
 
+    /// <summary>
+    /// 顶层窗口的 SetWindowPos 使用物理屏幕坐标；WPF 保存的是 DIP。
+    /// 这里单独保留换算，避免桌面 owner 建立后仍只修改 Window.Left/Top，
+    /// 导致透明窗口的真实 HWND 停留在 Explorer 给出的默认位置。
+    /// </summary>
+    internal static (int X,int Y) ScreenDipToPixels(double screenLeft,double screenTop,
+        double dpiScaleX,double dpiScaleY) =>
+        (ToPixel(screenLeft,dpiScaleX),ToPixel(screenTop,dpiScaleY));
+
     internal static (double X,double Y) PixelDeltaToDip(int deltaX,int deltaY,double dpiScaleX,double dpiScaleY) =>
         (deltaX/SafeScale(dpiScaleX),deltaY/SafeScale(dpiScaleY));
 

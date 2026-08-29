@@ -166,6 +166,23 @@ public sealed class FloatingDockLayoutTests
     }
 
     [Fact]
+    public void RepeatedStartupLayoutKeepsThePersistedBarAnchor()
+    {
+        const double savedLeft=2293,savedBarTop=1260;
+        var above=TodoHeight+Gap;
+
+        var first=FloatingDockLayout.Resolve(savedLeft,savedBarTop,above,totalWidth:262,
+            totalHeight:BarHeight+above,Work);
+        var second=FloatingDockLayout.Resolve(savedLeft,savedBarTop,above,totalWidth:262,
+            totalHeight:BarHeight+above,Work);
+        var restoredAnchor=FloatingDockLayout.AnchorOf(second.Left,second.Top,above);
+
+        Assert.Equal(first,second);
+        Assert.Equal(savedLeft,restoredAnchor.Left);
+        Assert.Equal(savedBarTop,restoredAnchor.Top);
+    }
+
+    [Fact]
     public void NeverPlaced_GoesToTheBottomRightCorner()
     {
         var (left, top) = FloatingDockLayout.Resolve(double.NaN, double.NaN, 0, 170, BarHeight, Work);
