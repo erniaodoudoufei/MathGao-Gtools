@@ -30,7 +30,12 @@ internal sealed class DashboardWindow : Window
     {
         Title="Gtools";Width=660;Height=650;MinWidth=560;MinHeight=480;WindowStartupLocation=WindowStartupLocation.CenterScreen;
         var root=new DockPanel{Margin=new Thickness(20)};
-        var head=new StackPanel();head.Children.Add(Ui.Text("Gtools",32,FontWeights.Bold));head.Children.Add(Ui.Text("轻量主入口，功能按模块独立运行。",14));
+        var app=ApplicationIdentity.Current;
+        var head=new StackPanel();var titleRow=new StackPanel{Orientation=Orientation.Horizontal};
+        titleRow.Children.Add(Ui.Text("Gtools",32,FontWeights.Bold));
+        var versionText=Ui.Text(app.DisplayLabel,13,FontWeights.SemiBold);versionText.Foreground=new SolidColorBrush(Color.FromRgb(45,108,178));versionText.Margin=new Thickness(0);versionText.ToolTip=app.ExecutablePath;
+        titleRow.Children.Add(new Border{Background=new SolidColorBrush(Color.FromRgb(235,244,255)),BorderBrush=new SolidColorBrush(Color.FromRgb(148,188,226)),BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(10),Padding=new Thickness(7,1,7,1),Margin=new Thickness(10,8,0,8),Child=versionText});
+        head.Children.Add(titleRow);head.Children.Add(Ui.Text("轻量主入口，功能按模块独立运行。",14));
         DockPanel.SetDock(head,Dock.Top);root.Children.Add(head);
         var actions=new WrapPanel{Margin=new Thickness(0,14,0,14)};
         actions.Children.Add(Ui.Button("截图 OCR  Alt+B",(_,_)=>ocr()));actions.Children.Add(Ui.Button("截图翻译  Alt+S",(_,_)=>translate()));
@@ -76,11 +81,35 @@ internal sealed class DiagnosticsWindow : Window
     private void Append(string text){_output.AppendText((string.IsNullOrEmpty(_output.Text)?"":Environment.NewLine+Environment.NewLine)+text);_output.ScrollToEnd();}
 }
 
+internal static class TranslationVisualStyle
+{
+    public const double BodyFontSize=17;
+    public const double BodyLineHeight=25;
+    public const double CompareFontSize=15.5;
+    public static FontFamily FontFor(string language)=>new(IsChinese(language)?"Microsoft YaHei UI":"Segoe UI");
+    public static string LanguageName(string language)=>language switch
+    {
+        "zh-CN" or "zh" or "zh-Hans"=>"中文",
+        "en"=>"English",
+        "auto" or ""=>"自动识别",
+        _=>language
+    };
+    private static bool IsChinese(string language)=>language.StartsWith("zh",StringComparison.OrdinalIgnoreCase);
+}
+
 internal sealed class TranslationWindow : Window
 {
-    private readonly TextBox _source=new(){AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};
-    private readonly TextBox _target=new(){AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,VerticalScrollBarVisibility=ScrollBarVisibility.Auto};
-    private readonly TextBlock _meta=Ui.Text("",12);
+    private static readonly Brush MainText=new SolidColorBrush(Color.FromRgb(31,41,55));
+    private static readonly Brush SourceAccent=new SolidColorBrush(Color.FromRgb(45,108,178));
+    private static readonly Brush TargetAccent=new SolidColorBrush(Color.FromRgb(38,125,91));
+    private static readonly Brush SourceTint=new SolidColorBrush(Color.FromRgb(235,244,255));
+    private static readonly Brush TargetTint=new SolidColorBrush(Color.FromRgb(235,249,242));
+    private readonly TextBox _source=CreateBodyBox();
+    private readonly TextBox _target=CreateBodyBox();
+    private readonly TextBlock _sourceTitle=Ui.Text("原文",14.5,FontWeights.SemiBold);
+    private readonly TextBlock _targetTitle=Ui.Text("译文",14.5,FontWeights.SemiBold);
+    private readonly TextBlock _meta=Ui.Text("",13.5,FontWeights.Medium);
+    private readonly Border _metaHost=new(){CornerRadius=new CornerRadius(7),Padding=new Thickness(10,7,10,7),Margin=new Thickness(0,0,0,10),BorderThickness=new Thickness(1)};
     private readonly StackPanel _compare=new();
     private readonly ScrollViewer _compareHost;
     private string _sl="auto",_tl="zh-CN";
@@ -92,63 +121,106 @@ internal sealed class TranslationWindow : Window
         Func<string,string,string,Task<IReadOnlyList<ProviderOutcome>>> compareAll,
         Action<string,string,string> saveWord)
     {
-        _run=run;_compareAll=compareAll;_sl=sl;_tl=tl;Title="Gtools · 截图翻译";Width=760;Height=560;Topmost=true;WindowStartupLocation=WindowStartupLocation.CenterScreen;
-        _source.Text=source;_target.Text=result.Text;_meta.Text=Meta(result);
-        _compareHost=new ScrollViewer{Content=_compare,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Visibility=Visibility.Collapsed,MaxHeight=210};
+        _run=run;_compareAll=compareAll;_sl=sl;_tl=tl;
+        Title="Gtools · 截图翻译";Width=900;Height=620;MinWidth=760;MinHeight=500;Topmost=true;
+        WindowStartupLocation=WindowStartupLocation.CenterScreen;Background=new SolidColorBrush(Color.FromRgb(247,248,250));
+        UseLayoutRounding=true;SnapsToDevicePixels=true;TextOptions.SetTextFormattingMode(this,TextFormattingMode.Display);
+        _source.Text=source;_target.Text=result.Text;_metaHost.Child=_meta;SetMeta(result);UpdateLanguageVisuals();
+        _compareHost=new ScrollViewer{Content=_compare,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Visibility=Visibility.Collapsed,MaxHeight=190,Margin=new Thickness(0,10,0,0)};
 
-        var grid=new Grid{Margin=new Thickness(12)};
+        var grid=new Grid{Margin=new Thickness(16)};
         grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new());
         grid.RowDefinitions.Add(new(){Height=GridLength.Auto});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
-        grid.ColumnDefinitions.Add(new());grid.ColumnDefinitions.Add(new());
-        Grid.SetColumnSpan(_meta,2);grid.Children.Add(_meta);
-        Grid.SetRow(_source,1);Grid.SetColumn(_source,0);grid.Children.Add(_source);
-        Grid.SetRow(_target,1);Grid.SetColumn(_target,1);grid.Children.Add(_target);
-        Grid.SetRow(_compareHost,2);Grid.SetColumnSpan(_compareHost,2);grid.Children.Add(_compareHost);
+        grid.ColumnDefinitions.Add(new());grid.ColumnDefinitions.Add(new(){Width=new GridLength(12)});grid.ColumnDefinitions.Add(new());
+        Grid.SetColumnSpan(_metaHost,3);grid.Children.Add(_metaHost);
+        var sourceCard=CreateCard(_sourceTitle,_source,SourceAccent,SourceTint);
+        var targetCard=CreateCard(_targetTitle,_target,TargetAccent,TargetTint);
+        Grid.SetRow(sourceCard,1);Grid.SetColumn(sourceCard,0);grid.Children.Add(sourceCard);
+        Grid.SetRow(targetCard,1);Grid.SetColumn(targetCard,2);grid.Children.Add(targetCard);
+        Grid.SetRow(_compareHost,2);Grid.SetColumnSpan(_compareHost,3);grid.Children.Add(_compareHost);
 
-        var bar=new WrapPanel();
-        bar.Children.Add(Ui.Button("复制译文",(_,_)=>Clipboard.SetText(_target.Text)));
-        bar.Children.Add(Ui.Button("交换语言",async(_,_)=>{(_sl,_tl)=(_tl,_sl);(_source.Text,_target.Text)=(_target.Text,_source.Text);await Retry();}));
-        bar.Children.Add(Ui.Button("重试",async(_,_)=>await Retry()));
-        bar.Children.Add(Ui.Button("多引擎对照",async(_,_)=>await CompareAsync()));
-        bar.Children.Add(Ui.Button("加入生词本",(_,_)=>saveWord(_source.SelectedText.Length>0?_source.SelectedText:_source.Text,_target.Text,_source.Text)));
-        Grid.SetRow(bar,3);Grid.SetColumnSpan(bar,2);grid.Children.Add(bar);Content=grid;
+        var bar=new WrapPanel{Margin=new Thickness(0,10,0,0)};
+        bar.Children.Add(ActionButton("复制译文",(_,_)=>Clipboard.SetText(_target.Text)));
+        bar.Children.Add(ActionButton("交换语言",async(_,_)=>{(_sl,_tl)=(_tl,_sl);(_source.Text,_target.Text)=(_target.Text,_source.Text);UpdateLanguageVisuals();await Retry();}));
+        bar.Children.Add(ActionButton("重试",async(_,_)=>await Retry()));
+        bar.Children.Add(ActionButton("多引擎对照",async(_,_)=>await CompareAsync()));
+        bar.Children.Add(ActionButton("加入生词本",(_,_)=>saveWord(_source.SelectedText.Length>0?_source.SelectedText:_source.Text,_target.Text,_source.Text)));
+        Grid.SetRow(bar,3);Grid.SetColumnSpan(bar,3);grid.Children.Add(bar);Content=grid;
     }
 
-    private string Meta(TranslationResult r)=>$"{_sl} → {_tl} · {r.Provider} · {r.Elapsed.TotalSeconds:0.0}s"+(r.IsUnofficial?" · 非官方通道可能失效":"");
+    private static TextBox CreateBodyBox()
+    {
+        var box=new TextBox
+        {
+            AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,
+            BorderThickness=new Thickness(0),Background=Brushes.White,Foreground=MainText,FontSize=TranslationVisualStyle.BodyFontSize,
+            Padding=new Thickness(12,10,12,12)
+        };
+        SpellCheck.SetIsEnabled(box,false);
+        TextBlock.SetLineHeight(box,TranslationVisualStyle.BodyLineHeight);
+        TextBlock.SetLineStackingStrategy(box,LineStackingStrategy.BlockLineHeight);
+        return box;
+    }
+
+    private static Border CreateCard(TextBlock title,TextBox body,Brush accent,Brush tint)
+    {
+        title.Foreground=accent;title.Margin=new Thickness(2,0,0,0);
+        var header=new Border{Background=tint,Padding=new Thickness(10,8,10,8),CornerRadius=new CornerRadius(8,8,0,0),Child=title};
+        DockPanel.SetDock(header,Dock.Top);
+        var content=new DockPanel();content.Children.Add(header);content.Children.Add(body);
+        return new Border{Background=Brushes.White,BorderBrush=accent,BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(9),ClipToBounds=true,Child=content};
+    }
+
+    private static Button ActionButton(string label,RoutedEventHandler click)
+    {
+        var button=Ui.Button(label,click);button.FontSize=13.5;button.Padding=new Thickness(12,6,12,6);button.Margin=new Thickness(0,0,7,0);button.MinHeight=34;return button;
+    }
+
+    private void UpdateLanguageVisuals()
+    {
+        _source.FontFamily=TranslationVisualStyle.FontFor(_sl);_target.FontFamily=TranslationVisualStyle.FontFor(_tl);
+        _sourceTitle.Text=$"原文  ·  {TranslationVisualStyle.LanguageName(_sl)}";
+        _targetTitle.Text=$"译文  ·  {TranslationVisualStyle.LanguageName(_tl)}";
+    }
+
+    private string Meta(TranslationResult r)=>$"{TranslationVisualStyle.LanguageName(_sl)} → {TranslationVisualStyle.LanguageName(_tl)}   ·   {r.Provider}   ·   {r.Elapsed.TotalSeconds:0.0}s"+(r.IsUnofficial?"   ·   非官方通道可能失效":"");
+    private void SetMeta(TranslationResult result){_meta.Text=Meta(result);SetMetaColors(result.IsUnofficial?Color.FromRgb(255,248,231):Color.FromRgb(238,246,255),result.IsUnofficial?Color.FromRgb(218,151,36):Color.FromRgb(80,133,190));}
+    private void SetWorking(string message){_meta.Text=message;SetMetaColors(Color.FromRgb(238,246,255),Color.FromRgb(80,133,190));}
+    private void SetError(string message){_meta.Text=message;SetMetaColors(Color.FromRgb(255,239,239),Color.FromRgb(190,70,70));_meta.Foreground=Brushes.Firebrick;}
+    private void SetMetaColors(Color background,Color border){_metaHost.Background=new SolidColorBrush(background);_metaHost.BorderBrush=new SolidColorBrush(border);_meta.Foreground=MainText;}
 
     private async Task Retry()
     {
-        try{_meta.Text="正在翻译…";var r=await _run(_source.Text,_sl,_tl,"default");_target.Text=r.Text;_meta.Text=Meta(r);}
-        catch(Exception ex){_meta.Text=ex.Message;}
+        try{SetWorking("正在翻译…");var r=await _run(_source.Text,_sl,_tl,"default");_target.Text=r.Text;SetMeta(r);}
+        catch(Exception ex){SetError(ex.Message);}
     }
 
     /// <summary>所有可用引擎并发跑一遍，逐条列出来对照，某一路失败只显示该路的错误。</summary>
     private async Task CompareAsync()
     {
-        _meta.Text="正在向所有可用引擎请求…";_compare.Children.Clear();_compareHost.Visibility=Visibility.Visible;
+        SetWorking("正在向所有可用引擎请求…");_compare.Children.Clear();_compareHost.Visibility=Visibility.Visible;
         try
         {
             var results=await _compareAll(_source.Text,_sl,_tl);
             _compare.Children.Clear();
             foreach(var outcome in results)
             {
-                var card=new Border{Background=Brushes.White,CornerRadius=new CornerRadius(6),Padding=new Thickness(10),Margin=new Thickness(0,0,0,6)};
+                var card=new Border{Background=Brushes.White,BorderBrush=new SolidColorBrush(Color.FromRgb(218,224,232)),BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(7),Padding=new Thickness(11),Margin=new Thickness(0,0,0,7)};
                 var stack=new StackPanel();
-                stack.Children.Add(Ui.Text(outcome.Provider+(outcome.Error is null?$" · {outcome.Elapsed.TotalSeconds:0.0}s":" · 失败"),12,FontWeights.SemiBold));
-                var body=Ui.Text(outcome.Error??outcome.Text,13);
-                if(outcome.Error is not null)body.Foreground=Brushes.Firebrick;
-                body.TextWrapping=TextWrapping.Wrap;stack.Children.Add(body);
+                var heading=Ui.Text(outcome.Provider+(outcome.Error is null?$" · {outcome.Elapsed.TotalSeconds:0.0}s":" · 失败"),13.5,FontWeights.SemiBold);heading.Foreground=outcome.Error is null?TargetAccent:Brushes.Firebrick;stack.Children.Add(heading);
+                var body=Ui.Text(outcome.Error??outcome.Text,TranslationVisualStyle.CompareFontSize);body.FontFamily=TranslationVisualStyle.FontFor(outcome.Error is null?_tl:_sl);body.Foreground=outcome.Error is null?MainText:Brushes.Firebrick;
+                body.TextWrapping=TextWrapping.Wrap;TextBlock.SetLineHeight(body,23);stack.Children.Add(body);
                 if(outcome.Error is null)
                 {
-                    var use=Ui.Button("用这条",(_,_)=>{_target.Text=outcome.Text;_meta.Text=$"{_sl} → {_tl} · 已采用 {outcome.Provider}";});
+                    var use=ActionButton("采用这条译文",(_,_)=>{_target.Text=outcome.Text;SetWorking($"{TranslationVisualStyle.LanguageName(_sl)} → {TranslationVisualStyle.LanguageName(_tl)}   ·   已采用 {outcome.Provider}");});
                     use.HorizontalAlignment=HorizontalAlignment.Left;stack.Children.Add(use);
                 }
                 card.Child=stack;_compare.Children.Add(card);
             }
             var ok=results.Count(x=>x.Error is null);
-            _meta.Text=$"{_sl} → {_tl} · 对照完成，{ok}/{results.Count} 个引擎返回结果";
+            SetWorking($"{TranslationVisualStyle.LanguageName(_sl)} → {TranslationVisualStyle.LanguageName(_tl)}   ·   对照完成，{ok}/{results.Count} 个引擎返回结果");
         }
-        catch(Exception ex){_meta.Text=ex.Message;}
+        catch(Exception ex){SetError(ex.Message);}
     }
 }
 
@@ -1013,7 +1085,7 @@ internal sealed class SettingsWindow : Window
         AddField(p,"单张长图最多采集帧数",_longFrames,_s.LongShotMaxFrames.ToString(CultureInfo.InvariantCulture));
         p.Children.Add(Ui.Text("翻译 Provider",20,FontWeights.SemiBold));
         var providers=new ComboBox{ItemsSource=new[]{"google-web","youdao-web","openai-compatible"},SelectedItem=_s.TranslationProvider,Margin=new Thickness(3)};providers.SelectionChanged+=(_,_)=>_s.TranslationProvider=providers.SelectedItem?.ToString()??"google-web";p.Children.Add(providers);
-        p.Children.Add(Ui.Text("Google 与有道都是免密钥的非官方网页通道，可能随时失效；只会发送 OCR 后的文字，不会上传截图。翻译窗口里的“多引擎对照”会同时请求所有可用引擎。",12));
+        p.Children.Add(Ui.Text("Google 与有道都是免密钥的非官方网页通道，可能随时失效；只会发送 OCR 后的文字，不会上传截图。Google 失败时可先切换有道对照；两者都失败时请检查网络、DNS 或代理。翻译窗口里的“多引擎对照”会同时请求所有可用引擎。",12));
         AddCheck(p,"加入生词本时自动查词（有道词典 + dictionaryapi.dev）",nameof(_s.DictionaryLookupEnabled),_s.DictionaryLookupEnabled);
         p.Children.Add(Ui.Text("性能悬浮条",20,FontWeights.SemiBold));
         var monitorThemes=new ComboBox{ItemsSource=Enum.GetValues<MonitorTheme>(),SelectedItem=_s.MonitorTheme,Margin=new Thickness(3)};
@@ -1025,7 +1097,28 @@ internal sealed class SettingsWindow : Window
         AddField(p,"待办最多显示几行（超出后在块内滚动）",_todoRows,_s.TodoVisibleRows.ToString(CultureInfo.InvariantCulture));
         p.Children.Add(Ui.Text("流量条右侧的小箭头可以随时折叠/展开待办；折叠且还有未完成项时箭头上会显示条数。托盘菜单里也有开关。",12));
         AddField(p,"OpenAI 兼容地址",_base,_s.OpenAiBaseUrl);AddField(p,"模型",_model,_s.OpenAiModel);AddField(p,"API Key（留空表示不修改）",_key,"");AddField(p,"系统提示词",_prompt,_s.OpenAiPrompt);
+        p.Children.Add(BuildVersionPanel());
         var save=Ui.Button("保存并应用",async(_,_)=>{Apply();await _store.SaveAsync();SettingsChanged?.Invoke(this,EventArgs.Empty);DialogResult=true;});p.Children.Add(save);Content=scroll;
+    }
+    private static UIElement BuildVersionPanel()
+    {
+        var app=ApplicationIdentity.Current;
+        var stack=new StackPanel();
+        var title=Ui.Text($"当前运行版本  {app.FileVersion}",14,FontWeights.SemiBold);title.Foreground=new SolidColorBrush(Color.FromRgb(45,108,178));stack.Children.Add(title);
+        stack.Children.Add(Ui.Text("当前 Gtools.exe 位置",12,FontWeights.SemiBold));
+        stack.Children.Add(new TextBox{Text=app.ExecutablePath,IsReadOnly=true,BorderThickness=new Thickness(0),Background=Brushes.Transparent,FontSize=12,TextWrapping=TextWrapping.Wrap,Padding=new Thickness(4,2,4,5)});
+        var open=Ui.Button("打开程序所在目录",(_,_)=>OpenApplicationFolder(app.ExecutablePath));open.HorizontalAlignment=HorizontalAlignment.Left;open.Padding=new Thickness(10,5,10,5);stack.Children.Add(open);
+        return new Border{Background=new SolidColorBrush(Color.FromRgb(235,244,255)),BorderBrush=new SolidColorBrush(Color.FromRgb(148,188,226)),BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(8),Padding=new Thickness(10),Margin=new Thickness(3,14,3,10),Child=stack};
+    }
+    private static void OpenApplicationFolder(string executablePath)
+    {
+        try
+        {
+            var directory=Path.GetDirectoryName(executablePath);
+            if(string.IsNullOrWhiteSpace(directory)||!Directory.Exists(directory))throw new DirectoryNotFoundException("找不到当前程序所在目录。");
+            var start=new ProcessStartInfo("explorer.exe"){UseShellExecute=true};start.ArgumentList.Add(directory);Process.Start(start);
+        }
+        catch(Exception ex){MessageBox.Show(ex.Message,"Gtools");}
     }
     private void AddCheck(Panel p,string label,string key,bool value){var c=new CheckBox{Content=label,IsChecked=value,Margin=new Thickness(5)};_checks[key]=c;p.Children.Add(c);}
     private static void AddKey(Grid grid,int column,string label,TextBox box,string value){var p=new StackPanel();p.Children.Add(Ui.Text(label,12));box.Text=value;p.Children.Add(box);Grid.SetColumn(p,column);grid.Children.Add(p);}

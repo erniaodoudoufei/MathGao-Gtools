@@ -8,7 +8,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-`v1.1.6` 的源码已经公开。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
+`v1.1.7` 的源码已经公开。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
 
 当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
 
@@ -24,6 +24,14 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 - 性能悬浮条与待办：显示网络、CPU、内存，待办保存在本机 SQLite；两者可分别关闭。
 
 默认启用 OCR、翻译、生词本、长截图、剪贴板和待办；性能悬浮条可在设置中开启。MathGao-Gtools 不修改或卸载 Shot、STranslate、Ditto、AltSnap、TrafficMonitor 等其他软件。
+
+## 截图翻译 1.1.7
+
+翻译窗口采用浅蓝原文和浅绿译文双卡片布局。英文使用 Segoe UI，中文使用 Microsoft YaHei UI，正文为约 17px 并增加行距；文本仍可编辑、选择、复制、交换语言和加入生词本。主面板会显示正在运行的版本，设置页还会显示完整文件版本和 `Gtools.exe` 路径，可用来识别误打开的旧目录副本。
+
+Google 通道直接请求免密钥的非官方网页端点，并不是 Google Cloud 提供兼容承诺的正式 Translation API。它只接收 OCR 后的文字，不接收截图，但未来可能因端点、参数、返回格式、频率限制或地区网络变化而失效。Gtools 会分别提示超时、HTTP 403、429、服务端异常和返回格式变化，不会在失败后自动把文字转发给其他服务。正式接口的要求可参考 [Google Cloud Translation 身份验证](https://docs.cloud.google.com/translate/docs/authentication) 和 [Basic REST translate](https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate)。
+
+排查时先用浏览器确认 Google 翻译是否可访问，再在“设置 → 翻译 Provider”切换为 `youdao-web`：有道正常而 Google 失败，通常是 Google 通道或连通性问题；两者都失败时优先检查网络、DNS 和代理。需要稳定的自有通道时，可配置 `openai-compatible` 地址、模型和 Key。正式 Google Cloud Translation API 需要单独的 Google Cloud 项目、身份验证和配额/计费配置，不能只替换当前 URL。
 
 ## 长截图 1.1.5
 
@@ -85,7 +93,7 @@ dotnet test .\tests\Gtools.Tests\Gtools.Tests.csproj -c Release --no-build
 dotnet list .\Gtools.sln package --vulnerable --include-transitive
 ```
 
-本地评估目录为 `artifacts\Gtools-1.1.6`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
+本地评估目录为 `artifacts\Gtools-1.1.7`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
 
 诊断启动可使用 `Gtools.exe --test-profile <目录> --diagnostics --show-dashboard`。测试配置不会读写正式 `%LOCALAPPDATA%\Gtools`，也不会修改开机启动设置。请勿公开提交原始诊断日志；日志可能包含本机路径和运行环境信息。
 
