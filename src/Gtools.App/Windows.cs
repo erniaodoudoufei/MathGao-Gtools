@@ -112,11 +112,14 @@ internal sealed class TranslationWindow : Window
     private readonly Border _metaHost=new(){CornerRadius=new CornerRadius(7),Padding=new Thickness(10,7,10,7),Margin=new Thickness(0,0,0,10),BorderThickness=new Thickness(1)};
     private readonly StackPanel _compare=new();
     private readonly ScrollViewer _compareHost;
+    private readonly Button _googleRetry;
+    private readonly Button _youdaoRetry;
     private string _sl="auto",_tl="zh-CN";
+    private bool _started;
     private readonly Func<string,string,string,string,Task<TranslationResult>> _run;
     private readonly Func<string,string,string,Task<IReadOnlyList<ProviderOutcome>>> _compareAll;
 
-    public TranslationWindow(string source, TranslationResult result, string sl,string tl,
+    public TranslationWindow(string source,string sl,string tl,
         Func<string,string,string,string,Task<TranslationResult>> run,
         Func<string,string,string,Task<IReadOnlyList<ProviderOutcome>>> compareAll,
         Action<string,string,string> saveWord)
@@ -125,7 +128,7 @@ internal sealed class TranslationWindow : Window
         Title="Gtools · 截图翻译";Width=900;Height=620;MinWidth=760;MinHeight=500;Topmost=true;
         WindowStartupLocation=WindowStartupLocation.CenterScreen;Background=new SolidColorBrush(Color.FromRgb(247,248,250));
         UseLayoutRounding=true;SnapsToDevicePixels=true;TextOptions.SetTextFormattingMode(this,TextFormattingMode.Display);
-        _source.Text=source;_target.Text=result.Text;_metaHost.Child=_meta;SetMeta(result);UpdateLanguageVisuals();
+        _source.Text=source;_target.Text="";_metaHost.Child=_meta;SetWorking("OCR 已完成，正在翻译…");UpdateLanguageVisuals();
         _compareHost=new ScrollViewer{Content=_compare,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Visibility=Visibility.Collapsed,MaxHeight=190,Margin=new Thickness(0,10,0,0)};
 
         var grid=new Grid{Margin=new Thickness(16)};
@@ -140,12 +143,16 @@ internal sealed class TranslationWindow : Window
         Grid.SetRow(_compareHost,2);Grid.SetColumnSpan(_compareHost,3);grid.Children.Add(_compareHost);
 
         var bar=new WrapPanel{Margin=new Thickness(0,10,0,0)};
+        bar.Children.Add(ActionButton("复制原文",(_,_)=>Clipboard.SetText(_source.Text)));
         bar.Children.Add(ActionButton("复制译文",(_,_)=>Clipboard.SetText(_target.Text)));
-        bar.Children.Add(ActionButton("交换语言",async(_,_)=>{(_sl,_tl)=(_tl,_sl);(_source.Text,_target.Text)=(_target.Text,_source.Text);UpdateLanguageVisuals();await Retry();}));
-        bar.Children.Add(ActionButton("重试",async(_,_)=>await Retry()));
+        bar.Children.Add(ActionButton("交换语言",async(_,_)=>{(_sl,_tl)=(_tl,_sl);(_source.Text,_target.Text)=(_target.Text,_source.Text);UpdateLanguageVisuals();await RetryAsync();}));
+        bar.Children.Add(ActionButton("重试",async(_,_)=>await RetryAsync()));
         bar.Children.Add(ActionButton("多引擎对照",async(_,_)=>await CompareAsync()));
         bar.Children.Add(ActionButton("加入生词本",(_,_)=>saveWord(_source.SelectedText.Length>0?_source.SelectedText:_source.Text,_target.Text,_source.Text)));
+        _googleRetry=ActionButton("已换代理节点，重试 Google",async(_,_)=>await RetryAsync("google-web-recheck"));_googleRetry.Visibility=Visibility.Collapsed;bar.Children.Add(_googleRetry);
+        _youdaoRetry=ActionButton("改用有道",async(_,_)=>await RetryAsync("youdao-web"));_youdaoRetry.Visibility=Visibility.Collapsed;bar.Children.Add(_youdaoRetry);
         Grid.SetRow(bar,3);Grid.SetColumnSpan(bar,3);grid.Children.Add(bar);Content=grid;
+        Loaded+=async(_,_)=>{if(_started)return;_started=true;await RetryAsync();};
     }
 
     private static TextBox CreateBodyBox()
@@ -189,10 +196,17 @@ internal sealed class TranslationWindow : Window
     private void SetError(string message){_meta.Text=message;SetMetaColors(Color.FromRgb(255,239,239),Color.FromRgb(190,70,70));_meta.Foreground=Brushes.Firebrick;}
     private void SetMetaColors(Color background,Color border){_metaHost.Background=new SolidColorBrush(background);_metaHost.BorderBrush=new SolidColorBrush(border);_meta.Foreground=MainText;}
 
-    private async Task Retry()
+    private async Task RetryAsync(string mode="default")
     {
-        try{SetWorking("正在翻译…");var r=await _run(_source.Text,_sl,_tl,"default");_target.Text=r.Text;SetMeta(r);}
-        catch(Exception ex){SetError(ex.Message);}
+        _googleRetry.Visibility=Visibility.Collapsed;_youdaoRetry.Visibility=Visibility.Collapsed;
+        try{SetWorking("正在翻译…");var r=await _run(_source.Text,_sl,_tl,mode);_target.Text=r.Text;SetMeta(r);}
+        catch(Exception ex)
+        {
+            DiagnosticLog.Write("translation","provider.failed",ex.Message,"Warning");SetError(ex.Message);
+            var recovery=TranslationRecoveryPolicy.For(ex);
+            _googleRetry.Visibility=recovery.ShowGoogleNetworkRetry?Visibility.Visible:Visibility.Collapsed;
+            _youdaoRetry.Visibility=recovery.ShowManualYoudao?Visibility.Visible:Visibility.Collapsed;
+        }
     }
 
     /// <summary>所有可用引擎并发跑一遍，逐条列出来对照，某一路失败只显示该路的错误。</summary>
@@ -225,6 +239,17 @@ internal sealed class TranslationWindow : Window
 }
 
 internal sealed record ProviderOutcome(string Provider,string Text,TimeSpan Elapsed,string? Error);
+
+internal readonly record struct TranslationRecoveryActions(bool ShowGoogleNetworkRetry,bool ShowManualYoudao);
+internal static class TranslationRecoveryPolicy
+{
+    internal static TranslationRecoveryActions For(Exception error)=>error switch
+    {
+        TranslationProviderException{ProviderId:"google-web",Kind:TranslationFailureKind.Network or TranslationFailureKind.Timeout or TranslationFailureKind.Forbidden or TranslationFailureKind.TooManyRequests or TranslationFailureKind.Server}=>new(true,true),
+        TranslationProviderException{ProviderId:"google-web"}=>new(false,true),
+        _=>new(false,false)
+    };
+}
 
 internal sealed class OcrEditorWindow : Window
 {
@@ -1090,14 +1115,16 @@ internal sealed class ToastWindow : Window
 internal sealed class SettingsWindow : Window
 {
     private readonly GtoolsSettings _s;private readonly SettingsStore _store;private readonly Dictionary<string,CheckBox> _checks=new();
+    private readonly Func<CancellationToken,Task<GoogleChannelTestResult>> _testGoogle;
+    private readonly TextBlock _googleTestStatus=Ui.Text("测试只发送固定合成文字，不发送 OCR、剪贴板或生词内容。",12);
     private readonly TextBox _base=new(),_model=new(),_key=new(),_prompt=new(){AcceptsReturn=true,Height=64};
     private readonly TextBox _ocrKey=new(),_translateKey=new(),_longKey=new(),_clipKey=new(),_clipLimit=new();
     private readonly TextBox _longFrames=new();
     private readonly TextBox _todoRows=new();
     public event EventHandler? SettingsChanged;
-    public SettingsWindow(GtoolsSettings settings,SettingsStore store)
+    public SettingsWindow(GtoolsSettings settings,SettingsStore store,Func<CancellationToken,Task<GoogleChannelTestResult>> testGoogle)
     {
-        _s=settings;_store=store;Title="Gtools · 设置";Width=620;Height=680;WindowStartupLocation=WindowStartupLocation.CenterScreen;
+        _s=settings;_store=store;_testGoogle=testGoogle;Title="Gtools · 设置";Width=620;Height=680;WindowStartupLocation=WindowStartupLocation.CenterScreen;
         var scroll=new ScrollViewer{VerticalScrollBarVisibility=ScrollBarVisibility.Auto};var p=new StackPanel{Margin=new Thickness(16)};scroll.Content=p;
         p.Children.Add(Ui.Text("模块",20,FontWeights.SemiBold));
         AddCheck(p,"开机启动",nameof(_s.StartWithWindows),_s.StartWithWindows);AddCheck(p,"OCR",nameof(_s.OcrEnabled),_s.OcrEnabled);AddCheck(p,"截图翻译",nameof(_s.TranslationEnabled),_s.TranslationEnabled);AddCheck(p,"聊天长截图",nameof(_s.LongShotEnabled),_s.LongShotEnabled);AddCheck(p,"历史剪贴板",nameof(_s.ClipboardEnabled),_s.ClipboardEnabled);AddCheck(p,"性能悬浮条",nameof(_s.MonitorEnabled),_s.MonitorEnabled);AddCheck(p,"锁定性能悬浮条位置",nameof(_s.MonitorLocked),_s.MonitorLocked);
@@ -1108,7 +1135,9 @@ internal sealed class SettingsWindow : Window
         AddField(p,"单张长图最多采集帧数",_longFrames,_s.LongShotMaxFrames.ToString(CultureInfo.InvariantCulture));
         p.Children.Add(Ui.Text("翻译 Provider",20,FontWeights.SemiBold));
         var providers=new ComboBox{ItemsSource=new[]{"google-web","youdao-web","openai-compatible"},SelectedItem=_s.TranslationProvider,Margin=new Thickness(3)};providers.SelectionChanged+=(_,_)=>_s.TranslationProvider=providers.SelectedItem?.ToString()??"google-web";p.Children.Add(providers);
-        p.Children.Add(Ui.Text("Google 与有道都是免密钥的非官方网页通道，可能随时失效；只会发送 OCR 后的文字，不会上传截图。Google 失败时可先切换有道对照；两者都失败时请检查网络、DNS 或代理。翻译窗口里的“多引擎对照”会同时请求所有可用引擎。",12));
+        p.Children.Add(Ui.Text("Google 与有道都是免密钥的非官方网页通道，可能随时失效；只会发送 OCR 后的文字，不会上传截图。Google 请求跟随当前系统代理或 TUN，不使用第三方公共中转，也不会绕过代理。翻译窗口里的“多引擎对照”会同时请求所有可用引擎。",12));
+        var googleTest=new Button{Content="测试 Google 通道",HorizontalAlignment=HorizontalAlignment.Left};googleTest.Click+=async(_,_)=>await TestGoogleAsync(googleTest);p.Children.Add(googleTest);
+        _googleTestStatus.Foreground=new SolidColorBrush(Color.FromRgb(80,90,105));p.Children.Add(_googleTestStatus);
         AddCheck(p,"加入生词本时自动查词（有道词典 + dictionaryapi.dev）",nameof(_s.DictionaryLookupEnabled),_s.DictionaryLookupEnabled);
         p.Children.Add(Ui.Text("性能悬浮条",20,FontWeights.SemiBold));
         var monitorThemes=new ComboBox{ItemsSource=Enum.GetValues<MonitorTheme>(),SelectedItem=_s.MonitorTheme,Margin=new Thickness(3)};
@@ -1142,6 +1171,20 @@ internal sealed class SettingsWindow : Window
             var start=new ProcessStartInfo("explorer.exe"){UseShellExecute=true};start.ArgumentList.Add(directory);Process.Start(start);
         }
         catch(Exception ex){MessageBox.Show(ex.Message,"Gtools");}
+    }
+    private async Task TestGoogleAsync(Button button)
+    {
+        button.IsEnabled=false;_googleTestStatus.Text="正在通过当前系统代理 / TUN 测试 Google…";_googleTestStatus.Foreground=new SolidColorBrush(Color.FromRgb(45,108,178));
+        try
+        {
+            var result=await _testGoogle(CancellationToken.None);
+            var status=result.StatusCode is null?"":$" · HTTP {(int)result.StatusCode}";
+            var cooldown=result.CooldownRemaining is {} remaining?$" · 冷却约 {Math.Ceiling(remaining.TotalSeconds):0} 秒":"";
+            _googleTestStatus.Text=result.Message+status+cooldown;
+            _googleTestStatus.Foreground=result.Success?new SolidColorBrush(Color.FromRgb(38,125,91)):Brushes.Firebrick;
+        }
+        catch(Exception ex){_googleTestStatus.Text="测试失败："+ex.Message;_googleTestStatus.Foreground=Brushes.Firebrick;}
+        finally{button.IsEnabled=true;}
     }
     private void AddCheck(Panel p,string label,string key,bool value){var c=new CheckBox{Content=label,IsChecked=value,Margin=new Thickness(5)};_checks[key]=c;p.Children.Add(c);}
     private static void AddKey(Grid grid,int column,string label,TextBox box,string value){var p=new StackPanel();p.Children.Add(Ui.Text(label,12));box.Text=value;p.Children.Add(box);Grid.SetColumn(p,column);grid.Children.Add(p);}

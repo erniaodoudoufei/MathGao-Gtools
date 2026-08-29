@@ -8,7 +8,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-`v1.1.8` 的源码已经公开。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
+`v1.1.9` 的源码已经公开。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
 
 当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
 
@@ -29,13 +29,15 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 待办与性能条共用一个桌面层窗口。设置中的位置锚点对应最下面性能条的左上角，因此展开或折叠待办时性能条不会跳动。启用“锁定位置”只会禁止拖动；重新启动、Explorer 桌面宿主重建以及窗口重新显示时，仍会恢复上次保存的位置。自动布局不会覆盖保存值，只有解锁后主动拖动结束才会记录新位置。
 
-## 截图翻译 1.1.7
+## 截图翻译 1.1.9
 
 翻译窗口采用浅蓝原文和浅绿译文双卡片布局。英文使用 Segoe UI，中文使用 Microsoft YaHei UI，正文为约 17px 并增加行距；文本仍可编辑、选择、复制、交换语言和加入生词本。主面板会显示正在运行的版本，设置页还会显示完整文件版本和 `Gtools.exe` 路径，可用来识别误打开的旧目录副本。
 
-Google 通道直接请求免密钥的非官方网页端点，并不是 Google Cloud 提供兼容承诺的正式 Translation API。它只接收 OCR 后的文字，不接收截图，但未来可能因端点、参数、返回格式、频率限制或地区网络变化而失效。Gtools 会分别提示超时、HTTP 403、429、服务端异常和返回格式变化，不会在失败后自动把文字转发给其他服务。正式接口的要求可参考 [Google Cloud Translation 身份验证](https://docs.cloud.google.com/translate/docs/authentication) 和 [Basic REST translate](https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate)。
+Google 通道直接请求 `translate.google.com` 的免密钥非官方网页端点，并不是 Google Cloud 提供兼容承诺的正式 Translation API。请求跟随当前系统代理或 TUN，不使用第三方公共中转，也不会绕过代理。它只接收 OCR 后的文字，不接收截图，但未来仍可能因端点、返回格式、频率限制或代理出口变化而失效。正式接口的要求可参考 [Google Cloud Translation 身份验证](https://docs.cloud.google.com/translate/docs/authentication) 和 [Basic REST translate](https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate)。
 
-排查时先用浏览器确认 Google 翻译是否可访问，再在“设置 → 翻译 Provider”切换为 `youdao-web`：有道正常而 Google 失败，通常是 Google 通道或连通性问题；两者都失败时优先检查网络、DNS 和代理。需要稳定的自有通道时，可配置 `openai-compatible` 地址、模型和 Key。正式 Google Cloud Translation API 需要单独的 Google Cloud 项目、身份验证和配额/计费配置，不能只替换当前 URL。
+为减少限流，相同翻译会合并，成功结果只在内存缓存15分钟且最多64条；实际请求至少相隔900ms。超时和服务端异常只进行一次受控重试，HTTP 429 会遵守服务端冷却时间。OCR 完成后会先显示原文，Google 失败不会关闭结果窗；更换代理节点后可主动重试，也可由用户明确点击改用有道，Gtools 不会自动转发文字。
+
+设置页的“测试 Google 通道”只发送固定合成文字，可在更换代理节点后立即检查。HTTP 429 表示当前代理出口已被网页通道限流，并不代表代理没有连接；403通常表示出口或通道策略拒绝；超时和连接失败再检查节点、DNS与网络。需要稳定的自有通道时，可配置 `openai-compatible` 地址、模型和 Key。正式 Google Cloud Translation API 需要单独的 Google Cloud 项目、身份验证和配额/计费配置，不能只替换当前 URL。
 
 ## 长截图 1.1.5
 
@@ -97,7 +99,7 @@ dotnet test .\tests\Gtools.Tests\Gtools.Tests.csproj -c Release --no-build
 dotnet list .\Gtools.sln package --vulnerable --include-transitive
 ```
 
-本地评估目录为 `artifacts\Gtools-1.1.8`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
+本地评估目录为 `artifacts\Gtools-1.1.9`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
 
 诊断启动可使用 `Gtools.exe --test-profile <目录> --diagnostics --show-dashboard`。测试配置不会读写正式 `%LOCALAPPDATA%\Gtools`，也不会修改开机启动设置。请勿公开提交原始诊断日志；日志可能包含本机路径和运行环境信息。
 
