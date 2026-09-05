@@ -64,7 +64,7 @@ internal sealed class OcrWorkerClient
         }
     }
 
-    private static async Task StopProcessAsync(Process process,string worker,string requestId)
+    internal static async Task StopProcessAsync(Process process,string worker,string requestId)
     {
         try
         {
@@ -80,6 +80,9 @@ internal sealed class OcrWorkerClient
 
 internal sealed class LongShotWorkerClient
 {
+    public Task<LongShotPairResponse> AnalyzeAsync(LongShotPairRequest request,CancellationToken token=default)=>
+        OcrWorkerClient.RunAsync<LongShotPairRequest,LongShotPairResponse>("Gtools.LongShotWorker",request,TimeSpan.FromSeconds(30),token,
+            new[]{"--operation","analyze"});
     public Task<LongShotResponse> StitchAsync(LongShotRequest request, CancellationToken token = default) =>
         OcrWorkerClient.RunAsync<LongShotRequest,LongShotResponse>("Gtools.LongShotWorker", request, TimeSpan.FromMinutes(10), token);
 

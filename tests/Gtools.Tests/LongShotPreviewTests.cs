@@ -21,17 +21,20 @@ public sealed class LongShotPreviewTests
                 using var image=surface.Snapshot();using var data=image.Encode(SKEncodedImageFormat.Png,90);using var stream=File.Create(path);data.SaveTo(stream);
             }
 
-            Exception? error=null;System.Windows.Media.Imaging.BitmapSource? preview=null;
+            Exception? error=null;System.Windows.Media.Imaging.BitmapSource? preview=null;LongShotImage.Preview? framePreview=null;
             var finished=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var thread=new Thread(()=>
             {
-                try{preview=LongShotPreviewWindow.LoadPreview(path);}
+                try{preview=LongShotPreviewWindow.LoadPreview(path);framePreview=LongShotImage.LoadInfo(path);}
                 catch(Exception ex){error=ex;}
                 finally{finished.SetResult();}
             });
             thread.SetApartmentState(ApartmentState.STA);thread.Start();await finished.Task;
             if(error is not null)throw error;
-            Assert.NotNull(preview);Assert.Equal(1200,preview!.PixelWidth);Assert.True(preview.PixelHeight<18_000);Assert.True(preview.IsFrozen);
+            Assert.NotNull(preview);Assert.InRange((long)preview!.PixelWidth*preview.PixelHeight,1,4_000_000);Assert.True(preview.PixelHeight<18_000);Assert.True(preview.IsFrozen);
+            Assert.NotNull(framePreview);Assert.Equal(1600,framePreview!.OriginalWidth);Assert.Equal(18_000,framePreview.OriginalHeight);
+            Assert.InRange((long)framePreview.Bitmap.PixelWidth*framePreview.Bitmap.PixelHeight,1,4_000_000);
+            Assert.True(framePreview.Bitmap.PixelHeight<18_000);Assert.True(framePreview.Bitmap.IsFrozen);
 
             // OnLoad must release the file instead of keeping the original long PNG locked.
             using var exclusive=File.Open(path,FileMode.Open,FileAccess.ReadWrite,FileShare.None);

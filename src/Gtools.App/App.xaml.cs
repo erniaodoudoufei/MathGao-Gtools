@@ -56,6 +56,7 @@ public partial class App : System.Windows.Application
             }
             RegisterHotkeys();CreateTray();ApplyStartup();await ApplyModulesAsync();
             if(_runtime.ShowDashboard)ShowDashboard();
+            if(_runtime.IsTestProfile&&e.Args.Contains("--longshot-demo"))new LongShotDemoWindow(RunLongShotAsync).Show();
         }
         catch(Exception ex){DiagnosticLog.Write("app","startup.failed",ex.ToString(),"Fatal");MessageBox.Show(ex.ToString(),"Gtools 启动失败");Shutdown(1);}
     }

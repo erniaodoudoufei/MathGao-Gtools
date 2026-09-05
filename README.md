@@ -8,7 +8,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-`v1.1.9` 的源码已经公开。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
+`v1.1.9` 已公开；`v1.1.10` 为本地微信长截图验收版，真实微信验收完成后再发布源码标签。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
 
 当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
 
@@ -19,7 +19,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 - `Alt+B`：框选屏幕并使用本地 PaddleOCR 识别，结果自动复制，可在提示中打开校对。
 - `Alt+S`：框选、OCR、自动判断中英方向，再通过 Google 网页通道、有道网页通道或用户配置的 OpenAI 兼容接口翻译。只有 OCR 后的文字会发送给翻译服务。
 - 英语生词本：可选的有道词典和 dictionaryapi.dev 在线查词、标签筛选、CSV 导出及抽卡复习。
-- `Alt+Shift+S`：手动或自动采集滚动区域，由独立 Worker 匹配和拼接长截图。
+- `Alt+Shift+S`：手动滚动微信聊天，逐帧检查并确认接缝，由独立 Worker 生成长图。
 - `Ctrl+~`：本地 SQLite 剪贴板历史，支持搜索、收藏、删除、暂停和恢复后粘贴。
 - 性能悬浮条与待办：显示网络、CPU、内存，待办保存在本机 SQLite；两者可分别关闭。
 
@@ -39,23 +39,26 @@ Google 通道直接请求 `translate.google.com` 的免密钥非官方网页端�
 
 设置页的“测试 Google 通道”只发送固定合成文字，可在更换代理节点后立即检查。HTTP 429 表示当前代理出口已被网页通道限流，并不代表代理没有连接；403通常表示出口或通道策略拒绝；超时和连接失败再检查节点、DNS与网络。需要稳定的自有通道时，可配置 `openai-compatible` 地址、模型和 Key。正式 Google Cloud Translation API 需要单独的 Google Cloud 项目、身份验证和配额/计费配置，不能只替换当前 URL。
 
-## 长截图 1.1.5
+## 微信长截图 1.1.10
 
-每次只允许一个长截图会话；重复按快捷键不会创建第二个任务。Esc、关闭采集窗、异常和超时都按取消处理，Worker 和临时帧会被清理。
+本版撤下自动滚动。按以下步骤逐帧采集，算法只提供对齐建议，最终图片严格采用你确认过的接缝。
 
-手动模式不会移动鼠标。选区隐藏并稳定后才采集首帧；点击采集后会等待画面连续两次稳定，最长约 1.2 秒。采集窗提供“采集并完成”和“直接完成”。检测到反向滚动、前进不足 6px、单次前进超过选区高度 86% 或达到最大帧数时会明确提示，不会静默截断。
+1. 按 `Alt+Shift+S`，框选消息区域并确认第一帧。避开标题、输入框、滚动条和“新消息”提示；必要时关闭提示后重新框选。
+2. 按设置中的方向手动滚动，每次保留至少半屏重叠，点击“采集下一帧”。画面需连续稳定300ms，3秒内未稳定则重试。
+3. 检查接缝实际成图，橙线标记拼接处，支持原始尺寸查看。点击“确认加入”后才会加入长图。
+4. 如需手工对齐，在两帧中各点一次同一行文字，点击“更新预览”，用 ±1px、接缝线位置及半透明叠加检查微调。
+5. 对不齐可“丢弃本帧并重采”；上一帧已确认也可撤销。最后点击“完成并预览”，只导出已确认内容。
 
-只有可信的位移提示才会用于缩小 Worker 搜索范围。匹配置信度低于 `0.62` 时预览会显著标记接缝；没有可信提示且找不到有效重叠时会停止生成，避免输出看似正常的错图。手动模式可明确选择“仍然采集并标记检查”。拼接期间进度窗会保留并显示当前阶段。
+固定提示或动画应先避开；完全无重叠、重复画面、反向滚动、内容变化过大时无法确认。没有足够定位信息时请回退后重采，不能通过“仍然采集”强行导出。窗口移动、大小/DPI变化或被其他窗口遮挡时会暂停。
 
-预览只加载约 1200px 宽的内存缩略图，原始 PNG 保留在磁盘；首尾裁剪由 Worker 完成，主进程不会为裁剪完整解码超长 PNG。输出名包含毫秒和短请求编号，连续生成不会互相覆盖。
+只允许一个采集会话。Esc或关闭采集/校对窗口取消任务，退出分析Worker后清理临时帧。导出支持完整PNG、分段PNG及Worker首尾裁剪；总览限制400万像素，原图保留在磁盘，文件名含毫秒及唯一编号。
 
-### 已知限制
+### 本轮验收与限制
 
-- 微信版本变化、动态表情或内容高度变化可能降低匹配可靠性；低置信度接缝需要人工检查。
-- 懒加载、无限滚动容器和虚拟列表可能在滚动后替换已有内容。
-- 自动滚动不能保证适配任意软件；微信聊天建议从手动模式开始。
-- 选区应避开标题栏、联系人列表、输入框和滚动条边缘；整屏图片、大片空白或重复气泡可能缺少可辨识特征。
-- 本版未引入 Windows Graphics Capture、ORB/光流、流式超大图或新的微信专用匹配参数。
+- 自动测试使用合成编号聊天，整图与原始长图逐像素比对，不再把“生成了文件”视为成功。
+- 真实微信桌面验收仍待完成，具体状态见 [长截图验收报告](LONGSHOT-ACCEPTANCE-v1.1.10.md)。
+- QQ、Generic 配置仍可读取，但本轮只验收微信；网页、PDF、OneNote及任意软件自动滚动不在本轮范围。
+- 懒加载、动态图像及内容重新排版可能需要重采；没有共同内容的两张截图不能自动补出中间丢失的消息。
 
 ## 历史剪贴板 1.1.6
 
@@ -99,10 +102,12 @@ dotnet test .\tests\Gtools.Tests\Gtools.Tests.csproj -c Release --no-build
 dotnet list .\Gtools.sln package --vulnerable --include-transitive
 ```
 
-本地评估目录为 `artifacts\Gtools-1.1.9`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
+本地评估目录为 `artifacts\Gtools-1.1.10`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
 
 诊断启动可使用 `Gtools.exe --test-profile <目录> --diagnostics --show-dashboard`。测试配置不会读写正式 `%LOCALAPPDATA%\Gtools`，也不会修改开机启动设置。请勿公开提交原始诊断日志；日志可能包含本机路径和运行环境信息。
 
 ## 安全与反馈
 
 安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。普通缺陷和功能建议可提交 GitHub Issue。版本变化见 [CHANGELOG.md](CHANGELOG.md)，脱敏后的发布验收摘要见 [ACCEPTANCE-STATUS.md](ACCEPTANCE-STATUS.md)。
+
+本地合成聊天交互验收入口：`Gtools.exe --test-profile <独立目录> --longshot-demo --diagnostics`。仅在明确指定独立测试配置时启用，不读取实际聊天数据。

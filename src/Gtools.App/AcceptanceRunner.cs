@@ -27,7 +27,7 @@ internal sealed class AcceptanceRunner(LocalDatabase database,DesktopModuleRegis
         },checks);
         var version=Assembly.GetExecutingAssembly().GetName().Version?.ToString()??"unknown";
         var report=new AcceptanceReport(version,AppPaths.Root,started,DateTimeOffset.Now,checks.All(x=>x.Passed),checks.ToArray(),DiagnosticLog.CurrentPath,
-        ["真实微信/QQ 长截图需要用户预先打开非敏感测试聊天后执行","OpenAI Provider 仅在用户已配置 Key 时联网测试","网页、PDF、OneNote 自动长截图不在本轮范围"]);
+        ["本自动验收不代表真实微信通过；手动逐帧校对需在用户预先打开的不敏感聊天中另行验收","QQ与Generic尚未验收","OpenAI Provider 仅在用户已配置 Key 时联网测试","网页、PDF、OneNote 自动长截图不在本轮范围"]);
         var target=reportPath??Path.Combine(AppPaths.Logs,$"acceptance-{DateTime.Now:yyyyMMdd-HHmmss}.json");Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(target))!);
         await File.WriteAllTextAsync(target,JsonSerializer.Serialize(report,GtoolsJson.Options),token);return report;
     }

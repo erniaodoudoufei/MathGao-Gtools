@@ -47,7 +47,7 @@ internal sealed class DashboardWindow : Window
     {
         _status.Children.Clear();_status.Children.Add(Ui.Text("模块状态",19,FontWeights.SemiBold));
         Add("OCR / 翻译 / 生词本",s.OcrEnabled&&s.TranslationEnabled,"Alt+B / Alt+S；OCR Worker 首次运行会准备本地模型");
-        Add("聊天长截图",s.LongShotEnabled,$"Alt+Shift+S；{s.LongShotProfile}；{(s.LongShotScrollUp?"向上":"向下")}滚动，步长自动校准");
+        Add("聊天长截图",s.LongShotEnabled,$"Alt+Shift+S；手动{(s.LongShotScrollUp?"向上":"向下")}滚动，逐帧确认接缝");
         Add("历史剪贴板",s.ClipboardEnabled,"Ctrl+~；SQLite FTS5，文字/富文本/图片");
         Add("性能悬浮条",s.MonitorEnabled,"上/下行、CPU、内存，每秒刷新");
         Add("待办清单",s.TodoEnabled,s.TodoExpanded?"拼在流量条上方，可勾选、删除、调顺序":"已折叠，点流量条右侧箭头或托盘菜单展开");
@@ -1130,8 +1130,8 @@ internal sealed class SettingsWindow : Window
         AddCheck(p,"开机启动",nameof(_s.StartWithWindows),_s.StartWithWindows);AddCheck(p,"OCR",nameof(_s.OcrEnabled),_s.OcrEnabled);AddCheck(p,"截图翻译",nameof(_s.TranslationEnabled),_s.TranslationEnabled);AddCheck(p,"聊天长截图",nameof(_s.LongShotEnabled),_s.LongShotEnabled);AddCheck(p,"历史剪贴板",nameof(_s.ClipboardEnabled),_s.ClipboardEnabled);AddCheck(p,"性能悬浮条",nameof(_s.MonitorEnabled),_s.MonitorEnabled);AddCheck(p,"锁定性能悬浮条位置",nameof(_s.MonitorLocked),_s.MonitorLocked);
         p.Children.Add(Ui.Text("快捷键",20,FontWeights.SemiBold));var keys=new Grid();for(var i=0;i<4;i++)keys.ColumnDefinitions.Add(new());AddKey(keys,0,"OCR",_ocrKey,_s.OcrHotkey);AddKey(keys,1,"翻译",_translateKey,_s.TranslateHotkey);AddKey(keys,2,"长截图",_longKey,_s.LongShotHotkey);AddKey(keys,3,"剪贴板",_clipKey,_s.ClipboardHotkey);p.Children.Add(keys);p.Children.Add(Ui.Text("快捷键修改后重启 Gtools 生效；` 键写作 Oem3。",12));AddField(p,"剪贴板保留条数（收藏不计入清理）",_clipLimit,_s.ClipboardLimit.ToString(CultureInfo.InvariantCulture));
         p.Children.Add(Ui.Text("长截图适配",20,FontWeights.SemiBold));var longProfiles=new ComboBox{ItemsSource=Enum.GetValues<LongShotCaptureProfile>(),SelectedItem=_s.LongShotProfile,Margin=new Thickness(3)};longProfiles.SelectionChanged+=(_,_)=>_s.LongShotProfile=(LongShotCaptureProfile)(longProfiles.SelectedItem??LongShotCaptureProfile.WeChat4);p.Children.Add(longProfiles);
-        p.Children.Add(Ui.Text("每次采集默认使用手动模式；需要时可在进度窗切换自动滚动。Generic 适用于网页、文档等非聊天软件。",12));
-        AddCheck(p,"向上滚动采集（聊天记录）；取消则向下滚动（网页、文档）",nameof(_s.LongShotScrollUp),_s.LongShotScrollUp);
+        p.Children.Add(Ui.Text("长截图采用手动滚动、逐帧确认；保留至少半屏重叠。本轮优先验证微信，QQ/Generic 尚未验收。",12));
+        AddCheck(p,"向上滚动采集较早消息；取消则向下采集较晚消息",nameof(_s.LongShotScrollUp),_s.LongShotScrollUp);
         AddField(p,"单张长图最多采集帧数",_longFrames,_s.LongShotMaxFrames.ToString(CultureInfo.InvariantCulture));
         p.Children.Add(Ui.Text("翻译 Provider",20,FontWeights.SemiBold));
         var providers=new ComboBox{ItemsSource=new[]{"google-web","youdao-web","openai-compatible"},SelectedItem=_s.TranslationProvider,Margin=new Thickness(3)};providers.SelectionChanged+=(_,_)=>_s.TranslationProvider=providers.SelectedItem?.ToString()??"google-web";p.Children.Add(providers);
@@ -1202,101 +1202,6 @@ internal sealed class SettingsWindow : Window
     private bool Get(string key)=>_checks[key].IsChecked==true;
 }
 
-internal sealed class LongShotProgressWindow : Window
-{
-    private readonly TextBlock _label=Ui.Text("准备采集…",14);private readonly TextBlock _status=Ui.Text("",12);
-    private readonly CancellationTokenSource _cts=new();private readonly LongShotCaptureModeState _modeState=new();
-    private readonly Button _modeButton;private readonly Button _nextButton;private readonly Button _captureAndFinishButton;
-    private readonly Button _finishButton;private readonly Button _cancelButton;
-    private int _frameCount;private bool _allowClose;
-    public CancellationToken Token=>_cts.Token;
-    public LongShotCaptureMode Mode=>_modeState.Mode;
-    public bool WasCancelled{get;private set;}
-    public LongShotProgressWindow()
-    {
-        Title="Gtools · 长截图采集";Width=560;Height=215;Topmost=true;ShowInTaskbar=false;ResizeMode=ResizeMode.NoResize;
-        WindowStartupLocation=WindowStartupLocation.Manual;
-        Left=SystemParameters.WorkArea.Right-Width-12;Top=SystemParameters.WorkArea.Top+12;
-        var p=new StackPanel{Margin=new Thickness(12)};
-        p.Children.Add(_label);p.Children.Add(_status);
-        p.Children.Add(Ui.Text("默认手动：滚动聊天后逐帧采集。需要时可切换自动滚动，自动失败会回到手动。",12));
-        var bar=new WrapPanel();
-        _modeButton=Ui.Button("切换自动",(_,_)=>ToggleMode());bar.Children.Add(_modeButton);
-        _nextButton=Ui.Button("采集下一帧",(_,_)=>RequestManualCapture());_nextButton.IsEnabled=false;bar.Children.Add(_nextButton);
-        _captureAndFinishButton=Ui.Button("采集并完成 (Enter)",(_,_)=>RequestCaptureAndFinish());bar.Children.Add(_captureAndFinishButton);
-        _finishButton=Ui.Button("直接完成",(_,_)=>RequestFinishWithoutCapture());bar.Children.Add(_finishButton);
-        _cancelButton=Ui.Button("取消 (Esc)",(_,_)=>Cancel());bar.Children.Add(_cancelButton);
-        p.Children.Add(bar);Content=p;
-        KeyDown+=(_,e)=>{if(e.Key==Key.Enter)RequestCaptureAndFinish();else if(e.Key==Key.Escape)Cancel();};
-        Closing+=(_,_)=>{if(!_allowClose)Cancel();};
-    }
-    public void SetFrame(int n){_frameCount=n;UpdateModeLabel();}
-    public void SetStatus(string text)=>_status.Text=text;
-    public void SetMode(LongShotCaptureMode mode,string message)
-    {
-        _modeState.SetMode(mode);_modeButton.Content=mode==LongShotCaptureMode.Manual?"切换自动":"切换手动";UpdateModeLabel();
-        _nextButton.IsEnabled=false;_status.Text=message;
-    }
-    public async Task<LongShotCaptureAction?> WaitForNextCaptureAsync()
-    {
-        _nextButton.IsEnabled=Mode==LongShotCaptureMode.Manual;
-        try{return await _modeState.WaitForNextActionAsync(_cts.Token);}
-        catch(OperationCanceledException){return null;}
-        finally{_nextButton.IsEnabled=false;}
-    }
-    private void ToggleMode()
-    {
-        if(Mode==LongShotCaptureMode.Manual)SetMode(LongShotCaptureMode.Automatic,"已切换自动滚动；下一帧将由 Gtools 自动滚动并采集。");
-        else SetMode(LongShotCaptureMode.Manual,"已切换手动：请滚动聊天，再点“采集下一帧”。");
-    }
-    private void RequestManualCapture()
-    {
-        if(_modeState.RequestManualCapture())_status.Text="正在采集当前画面…";
-    }
-    private void RequestCaptureAndFinish()
-    {
-        if(_modeState.RequestCaptureAndFinish())_status.Text="将采集当前画面并完成…";
-    }
-    private void RequestFinishWithoutCapture()
-    {
-        if(_modeState.RequestFinishWithoutCapture())_status.Text="将使用已经采集的画面直接完成…";
-    }
-    private void UpdateModeLabel()=>_label.Text=_frameCount>0
-        ?$"已采集 {_frameCount} 帧 · {(Mode==LongShotCaptureMode.Manual?"手动":"自动")}模式"
-        :$"准备采集 · {(Mode==LongShotCaptureMode.Manual?"手动":"自动")}模式";
-    private void Cancel(){if(_cts.IsCancellationRequested)return;WasCancelled=true;_cts.Cancel();}
-    public void SetProcessing(string message)
-    {
-        _modeButton.IsEnabled=false;_nextButton.IsEnabled=false;_captureAndFinishButton.IsEnabled=false;_finishButton.IsEnabled=false;
-        _status.Text=message;_label.Text=$"已采集 {_frameCount} 帧 · 正在生成长图";
-    }
-    public bool ConfirmUnreliableCapture(double confidence)=>MessageBox.Show(this,
-        $"这一屏无法可靠测量滚动距离（置信度 {confidence:0.00}）。\n\n仍然保存可能产生错位接缝，是否继续？",
-        "Gtools · 接缝需要确认",MessageBoxButton.YesNo,MessageBoxImage.Warning)==MessageBoxResult.Yes;
-    public void NotifySafetyLimit(string message)=>MessageBox.Show(this,message,"Gtools · 长截图已截断",MessageBoxButton.OK,MessageBoxImage.Information);
-    public void CloseAfterCompletion(){if(!IsLoaded)return;_allowClose=true;Close();}
-
-    /// <summary>把进度窗挪到不和采集区重叠的角落。挪得开就不必每帧 Hide/Show，采集期间不再闪烁。</summary>
-    public bool TryPlaceOutside(System.Drawing.Rectangle capture)
-    {
-        var dpi=VisualTreeHelper.GetDpi(this);
-        var work=System.Windows.Forms.Screen.FromRectangle(capture).WorkingArea;
-        var w=Width*dpi.DpiScaleX;var h=Height*dpi.DpiScaleY;
-        var left=(double)work.Left;var top=(double)work.Top;var right=(double)work.Right;var bottom=(double)work.Bottom;
-        var candidates=new[]
-        {
-            new System.Windows.Point(right-w-8,top+8), new System.Windows.Point(left+8,top+8),
-            new System.Windows.Point(right-w-8,bottom-h-8), new System.Windows.Point(left+8,bottom-h-8)
-        };
-        foreach(var c in candidates)
-        {
-            var box=new System.Drawing.Rectangle((int)c.X,(int)c.Y,(int)w,(int)h);
-            if(box.IntersectsWith(capture))continue;
-            Left=c.X/dpi.DpiScaleX;Top=c.Y/dpi.DpiScaleY;return true;
-        }
-        return false;
-    }
-}
 
 internal sealed class LongShotPreviewWindow : Window
 {
@@ -1306,7 +1211,7 @@ internal sealed class LongShotPreviewWindow : Window
         Title="Gtools · 长截图预览";Width=780;Height=700;WindowStartupLocation=WindowStartupLocation.CenterScreen;
         Closed+=(_,_)=>_lifetime.Cancel();
         var root=new DockPanel{Margin=new Thickness(8)};var top=new WrapPanel();
-        var notice=Ui.Text(r.Warnings.Length==0?"拼接完成，接缝置信度正常。":"⚠ "+string.Join("；",r.Warnings),13,r.Warnings.Length==0?FontWeights.Normal:FontWeights.SemiBold);
+        var notice=Ui.Text(r.Warnings.Length==0?"已按逐帧确认的接缝完成拼接。请检查完整图后使用。":"⚠ "+string.Join("；",r.Warnings),13,r.Warnings.Length==0?FontWeights.Normal:FontWeights.SemiBold);
         if(r.Warnings.Length>0)notice.Foreground=Brushes.DarkOrange;top.Children.Add(notice);
         if(r.OutputPath is not null)
         {
@@ -1330,7 +1235,13 @@ internal sealed class LongShotPreviewWindow : Window
     internal static BitmapSource LoadPreview(string path,int decodePixelWidth=1200)
     {
         using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);
-        var image=new BitmapImage();image.BeginInit();image.CacheOption=BitmapCacheOption.OnLoad;image.DecodePixelWidth=decodePixelWidth;image.StreamSource=stream;image.EndInit();image.Freeze();return image;
+        Span<byte> header=stackalloc byte[24];stream.ReadExactly(header);stream.Position=0;
+        if(!header[..8].SequenceEqual(new byte[]{137,80,78,71,13,10,26,10}))throw new InvalidDataException("预览需要 PNG 文件。");
+        var width=System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(header[16..20]);
+        var height=System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(header[20..24]);
+        if(width<=0||height<=0)throw new InvalidDataException("图像尺寸无效。");
+        var boundedWidth=Math.Max(1,(int)Math.Min(Math.Min(width,decodePixelWidth),Math.Sqrt(4_000_000d*width/height)));
+        var image=new BitmapImage();image.BeginInit();image.CacheOption=BitmapCacheOption.OnLoad;image.DecodePixelWidth=boundedWidth;image.StreamSource=stream;image.EndInit();image.Freeze();return image;
     }
     private async Task SaveCroppedAsync(LongShotResponse result,LongShotWorkerClient worker,int top,int bottom)
     {

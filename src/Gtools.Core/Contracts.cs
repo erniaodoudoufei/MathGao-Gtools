@@ -38,14 +38,24 @@ public sealed record DictionaryLookup(string Word, string Phonetic, string Meani
 {
     public bool IsEmpty => string.IsNullOrWhiteSpace(Meaning) && string.IsNullOrWhiteSpace(EnglishDefinition);
 }
-public sealed record SeamDiagnostic(int Index,int Offset,double Confidence,bool UsedFallback,int[] RegionOffsets);
+public sealed record SeamDiagnostic(int Index,int Offset,double Confidence,bool UsedFallback,int[] RegionOffsets,
+    int CutY=0,string Source="unconfirmed");
 public sealed record LongShotDiagnostics(LongShotCaptureProfile Profile,int FrameCount,int Width,int Height,long OutputPixels,
     long PeakWorkingSetBytes,SeamDiagnostic[] Seams,string[] PauseReasons,DateTimeOffset CompletedAt);
 public readonly record struct FrameAdvanceMeasurement(int SignedAdvance,double Confidence,bool IsReliable);
 public readonly record struct LongShotOffsetHint(int Offset,double Confidence,bool IsReliable);
 public sealed record LongShotRequest(string RequestId, string[] FramePaths, string OutputPath, int SegmentHeight,
     int MaxOutputPixels = 180_000_000, double MinimumConfidence = 0.62,LongShotCaptureProfile Profile=LongShotCaptureProfile.WeChat4,
-    double EdgeExclusionRatio=.06,string? DiagnosticsPath=null,LongShotOffsetHint[]? OffsetHints=null);
+    double EdgeExclusionRatio=.06,string? DiagnosticsPath=null,LongShotOffsetHint[]? OffsetHints=null,
+    ConfirmedLongShotSeam[]? ConfirmedSeams=null);
+public enum LongShotAlignmentSource { Suggested, ManualAnchors }
+public sealed record ConfirmedLongShotSeam(string UpperFrame,string LowerFrame,int Offset,int CutY,
+    LongShotAlignmentSource Source,double Confidence);
+public sealed record LongShotPairRequest(string RequestId,string UpperFrame,string LowerFrame,string PreviewPath,
+    int? ManualOffset=null,int? CutY=null);
+public sealed record LongShotPairResponse(string RequestId,bool Success,bool CanConfirm,int Offset,int CutY,
+    double Confidence,string Message,string? PreviewPath=null,string? OverlayPath=null,int Width=0,int Height=0,
+    double ChangedRatio=0,string? Error=null);
 public sealed record LongShotResponse(string RequestId, bool Success, string? OutputPath, string[] SegmentPaths,
     double[] SeamConfidences, string[] Warnings, string? Error = null,bool RequiresReview=false,LongShotDiagnostics? Diagnostics=null);
 public sealed record LongShotCropRequest(string RequestId,string SourcePath,string OutputPath,int X,int Y,int Width,int Height,

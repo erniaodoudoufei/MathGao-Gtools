@@ -29,21 +29,6 @@ internal static class ScreenCaptureService
         using var stream = new MemoryStream(); bitmap.Save(stream, ImageFormat.Png); return stream.ToArray();
     }
 
-    /// <summary>一次抓屏同时产出 PNG 和逐行特征，长截图用特征实测滚动距离。</summary>
-    public static CapturedFrame CaptureFrame(System.Drawing.Rectangle rect, double edgeExclusionRatio)
-    {
-        using var bitmap = Grab(rect);
-        var signature = Describe(bitmap, edgeExclusionRatio);
-        using var stream = new MemoryStream(); bitmap.Save(stream, ImageFormat.Png);
-        return new(stream.ToArray(), signature);
-    }
-
-    /// <summary>只取特征、不编码 PNG，用于滚动动画是否停稳的轮询。</summary>
-    public static FrameSignature CaptureSignature(System.Drawing.Rectangle rect, double edgeExclusionRatio)
-    {
-        using var bitmap = Grab(rect); return Describe(bitmap, edgeExclusionRatio);
-    }
-
     private static Bitmap Grab(System.Drawing.Rectangle rect)
     {
         var bitmap = new Bitmap(rect.Width, rect.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
@@ -51,30 +36,25 @@ internal static class ScreenCaptureService
         return bitmap;
     }
 
-    // 长截图等待滚动停稳时每 70ms 就要取一次特征，这里复用缓冲区，避免持续往大对象堆扔几 MB 的数组。
-    [ThreadStatic] private static byte[]? _pixelScratch;
-    [ThreadStatic] private static byte[]? _grayScratch;
-
-    private static FrameSignature Describe(Bitmap bitmap, double edgeExclusionRatio)
+    internal static (byte[] Png,StabilitySample Sample) CaptureStableSample(System.Drawing.Rectangle rect)
     {
-        var area = new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height);
-        var locked = bitmap.LockBits(area, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using var bitmap=Grab(rect);
+        var area=new System.Drawing.Rectangle(0,0,bitmap.Width,bitmap.Height);
+        var locked=bitmap.LockBits(area,ImageLockMode.ReadOnly,System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        StabilitySample sample;
         try
         {
-            var stride = Math.Abs(locked.Stride);
-            var needed = stride * bitmap.Height;
-            if (_pixelScratch is null || _pixelScratch.Length < needed) _pixelScratch = new byte[needed];
-            var grayNeeded = bitmap.Width * bitmap.Height;
-            if (_grayScratch is null || _grayScratch.Length < grayNeeded) _grayScratch = new byte[grayNeeded];
-            System.Runtime.InteropServices.Marshal.Copy(locked.Scan0, _pixelScratch, 0, needed);
-            var gray = FrameSignature.ToGray(_pixelScratch, bitmap.Width, bitmap.Height, stride, _grayScratch);
-            return FrameSignature.FromGray(gray, bitmap.Width, bitmap.Height, bitmap.Width, edgeExclusionRatio);
+            var bytes=new byte[Math.Abs(locked.Stride)*bitmap.Height];
+            System.Runtime.InteropServices.Marshal.Copy(locked.Scan0,bytes,0,bytes.Length);
+            var gray=StabilitySample.ToGray(bytes,bitmap.Width,bitmap.Height,Math.Abs(locked.Stride));
+            sample=StabilitySample.FromGray(gray,bitmap.Width,bitmap.Height,bitmap.Width);
         }
-        finally { bitmap.UnlockBits(locked); }
+        finally{bitmap.UnlockBits(locked);}
+        using var stream=new MemoryStream();bitmap.Save(stream,ImageFormat.Png);
+        return(stream.ToArray(),sample);
     }
-}
 
-internal sealed record CapturedFrame(byte[] Png, FrameSignature Signature);
+}
 
 internal sealed class RegionCaptureWindow : Window
 {
@@ -114,6 +94,8 @@ internal sealed class RegionCaptureWindow : Window
         SelectedRegion=LongShotCaptureGeometry.FromPhysicalPoints(_startScreen,_endScreen);
         DialogResult = true; Close();
     }
+
+
     private System.Drawing.Point GetPhysicalCursor(System.Windows.Point fallback)
     {
         if(NativeMethods.GetCursorPos(out var cursor))return cursor;

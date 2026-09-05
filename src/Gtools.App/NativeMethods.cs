@@ -16,9 +16,7 @@ internal static class NativeMethods
     [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] internal static extern bool ShowWindow(IntPtr hwnd, int command);
-    [DllImport("user32.dll")] internal static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] internal static extern bool GetCursorPos(out System.Drawing.Point point);
-    [DllImport("user32.dll")] internal static extern void mouse_event(uint flags, uint dx, uint dy, int data, UIntPtr extraInfo);
     [DllImport("user32.dll")] internal static extern uint SendInput(uint count, INPUT[] inputs, int size);
     [DllImport("kernel32.dll")] internal static extern bool GetSystemTimes(out FILETIME idle, out FILETIME kernel, out FILETIME user);
     [DllImport("kernel32.dll")] internal static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX state);

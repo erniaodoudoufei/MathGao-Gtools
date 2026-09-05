@@ -55,7 +55,8 @@ public sealed class PublishedPackageTests
             await using var pipe=new NamedPipeClientStream(".",pipeName,PipeDirection.InOut,PipeOptions.Asynchronous);
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(20));
             await pipe.ConnectAsync(timeout.Token);
-            await PipeJson.WriteAsync(pipe,new LongShotRequest("package-smoke",frames.ToArray(),output,1200),timeout.Token);
+            var seam=new ConfirmedLongShotSeam(frames[0],frames[1],step,320,LongShotAlignmentSource.ManualAnchors,0);
+            await PipeJson.WriteAsync(pipe,new LongShotRequest("package-smoke",frames.ToArray(),output,1200,ConfirmedSeams:new[]{seam}),timeout.Token);
             var response=await PipeJson.ReadAsync<LongShotResponse>(pipe,timeout.Token);
             Assert.NotNull(response);Assert.True(response!.Success,response.Error);Assert.True(File.Exists(output));
             await process!.WaitForExitAsync(timeout.Token);Assert.Equal(0,process.ExitCode);

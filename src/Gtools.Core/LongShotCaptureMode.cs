@@ -1,107 +1,69 @@
 namespace Gtools.Core;
 
-internal enum LongShotCaptureMode
-{
-    Manual,
-    Automatic
-}
+internal enum LongShotCaptureAction { Capture, Undo, Finish }
 
-internal enum LongShotCaptureAction
-{
-    ManualCapture,
-    AutomaticStep,
-    CaptureAndFinish,
-    FinishWithoutCapture
-}
-
-/// <summary>
-/// Coordinates the progress window with the capture loop. Manual requests are accepted only while
-/// the loop is waiting, so rapid or stale button clicks cannot queue extra frames.
-/// </summary>
+/// <summary>Only an active waiter accepts clicks. Review/processing never queues stale clicks.</summary>
 internal sealed class LongShotCaptureModeState
 {
-    private readonly object _gate=new();
-    private LongShotCaptureMode _mode=LongShotCaptureMode.Manual;
     private TaskCompletionSource<LongShotCaptureAction>? _waiter;
-    private LongShotCaptureAction? _pendingPriorityAction;
-
-    public LongShotCaptureMode Mode
+    public bool Request(LongShotCaptureAction action)=>Interlocked.Exchange(ref _waiter,null)?.TrySetResult(action)==true;
+    public async Task<LongShotCaptureAction> WaitAsync(CancellationToken token)
     {
-        get{lock(_gate)return _mode;}
-    }
-
-    public bool RequestManualCapture()
-    {
-        TaskCompletionSource<LongShotCaptureAction>? waiter;
-        lock(_gate)
-        {
-            if(_mode!=LongShotCaptureMode.Manual||_waiter is null)return false;
-            waiter=_waiter;_waiter=null;
-        }
-        return waiter.TrySetResult(LongShotCaptureAction.ManualCapture);
-    }
-
-    public bool RequestCaptureAndFinish()=>RequestPriorityAction(LongShotCaptureAction.CaptureAndFinish);
-    public bool RequestFinishWithoutCapture()=>RequestPriorityAction(LongShotCaptureAction.FinishWithoutCapture);
-
-    private bool RequestPriorityAction(LongShotCaptureAction action)
-    {
-        TaskCompletionSource<LongShotCaptureAction>? waiter;
-        lock(_gate)
-        {
-            if(_pendingPriorityAction is not null)return false;
-            waiter=_waiter;_waiter=null;
-            if(waiter is null)_pendingPriorityAction=action;
-        }
-        if(waiter is null)return true;
-        if(waiter.TrySetResult(action))return true;
-        lock(_gate)
-        {
-            if(_pendingPriorityAction is null){_pendingPriorityAction=action;return true;}
-        }
-        return false;
-    }
-
-    public void SetMode(LongShotCaptureMode mode)
-    {
-        TaskCompletionSource<LongShotCaptureAction>? waiter=null;
-        lock(_gate)
-        {
-            if(_mode==mode)return;
-            _mode=mode;
-            if(mode==LongShotCaptureMode.Automatic){waiter=_waiter;_waiter=null;}
-        }
-        waiter?.TrySetResult(LongShotCaptureAction.AutomaticStep);
-    }
-
-    public async Task<LongShotCaptureAction> WaitForNextActionAsync(CancellationToken token)
-    {
-        TaskCompletionSource<LongShotCaptureAction> waiter;
-        lock(_gate)
-        {
-            if(_pendingPriorityAction is { } pending)
-            {
-                _pendingPriorityAction=null;
-                return pending;
-            }
-            if(_mode==LongShotCaptureMode.Automatic)return LongShotCaptureAction.AutomaticStep;
-            if(_waiter is not null)throw new InvalidOperationException("A long-shot capture wait is already active.");
-            waiter=new(TaskCreationOptions.RunContinuationsAsynchronously);_waiter=waiter;
-        }
+        var waiter=new TaskCompletionSource<LongShotCaptureAction>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if(Interlocked.CompareExchange(ref _waiter,waiter,null) is not null)throw new InvalidOperationException("已有采集等待。");
         using var registration=token.Register(()=>waiter.TrySetCanceled(token));
-        try{return await waiter.Task.ConfigureAwait(false);}
-        finally
-        {
-            lock(_gate)if(ReferenceEquals(_waiter,waiter))_waiter=null;
-        }
+        try{return await waiter.Task;}
+        finally{Interlocked.CompareExchange(ref _waiter,null,waiter);}
     }
 }
 
-/// <summary>Prevents two region selectors and capture loops from running at the same time.</summary>
 internal sealed class LongShotSessionGate
 {
     private int _active;
     public bool TryEnter()=>Interlocked.CompareExchange(ref _active,1,0)==0;
     public void Exit()=>Volatile.Write(ref _active,0);
     public bool IsActive=>Volatile.Read(ref _active)!=0;
+}
+
+/// <summary>Capture order is retained for undo; export normalizes both directions to top-to-bottom.</summary>
+internal sealed class ReviewedLongShotSession(bool scrollUp)
+{
+    private readonly List<string> _frames=new();
+    private readonly List<ConfirmedLongShotSeam> _seams=new();
+    public IReadOnlyList<string> Frames=>_frames;
+    public string? LastFrame=>_frames.LastOrDefault();
+    public void AddFirst(string path){if(_frames.Count!=0)throw new InvalidOperationException();_frames.Add(path);}
+    public void Add(string path,ConfirmedLongShotSeam seam,int height)
+    {
+        if(LastFrame is null)throw new InvalidOperationException();
+        if(seam.UpperFrame!=(scrollUp?path:LastFrame)||seam.LowerFrame!=(scrollUp?LastFrame:path))
+            throw new InvalidOperationException("接缝不属于当前相邻帧。");
+        LongShotSeamGeometry.Validate(seam.Offset,seam.CutY,height);
+        if(_seams.Count>0)
+        {
+            var old=_seams[^1];
+            if(scrollUp?seam.CutY-seam.Offset>old.CutY:old.CutY-old.Offset>seam.CutY)
+                throw new InvalidOperationException("接缝越过了上一处已确认边界，请调整接缝线。");
+        }
+        _frames.Add(path);_seams.Add(seam);
+    }
+    public string? Undo()
+    {
+        if(_frames.Count<=1)return null;
+        var path=_frames[^1];_frames.RemoveAt(_frames.Count-1);_seams.RemoveAt(_seams.Count-1);return path;
+    }
+    public (string[] Frames,ConfirmedLongShotSeam[] Seams) Export()=>scrollUp
+        ?(_frames.AsEnumerable().Reverse().ToArray(),_seams.AsEnumerable().Reverse().ToArray())
+        :(_frames.ToArray(),_seams.ToArray());
+    public long OutputHeight(int height)=>height+_seams.Sum(s=>(long)s.Offset);
+}
+
+public static class LongShotSeamGeometry
+{
+    public static int FromAnchors(double upperY,double lowerY)=>checked((int)Math.Round(upperY-lowerY));
+    public static void Validate(int offset,int cutY,int height)
+    {
+        if(offset<8||offset>height*.70)throw new InvalidOperationException("画面重复、方向错误或重叠不足，请回退并保留至少半屏重叠。");
+        if(cutY<offset||cutY>height)throw new InvalidOperationException("接缝线必须位于两帧重叠区域。");
+    }
 }

@@ -1,84 +1,47 @@
 using Gtools.Core;
 
 namespace Gtools.Tests;
-
 public sealed class LongShotCaptureModeTests
 {
-    [Fact]
-    public void NewCaptureStartsInManualMode()
+    [Fact] public async Task ReviewAndProcessingCannotQueueCaptureClicks()
     {
         var state=new LongShotCaptureModeState();
-        Assert.Equal(LongShotCaptureMode.Manual,state.Mode);
-        Assert.False(state.RequestManualCapture());
+        Assert.False(state.Request(LongShotCaptureAction.Capture));
+        var wait=state.WaitAsync(CancellationToken.None);
+        Assert.True(state.Request(LongShotCaptureAction.Capture));
+        Assert.False(state.Request(LongShotCaptureAction.Capture));
+        Assert.Equal(LongShotCaptureAction.Capture,await wait);
+        Assert.False(state.Request(LongShotCaptureAction.Finish));
     }
-
-    [Fact]
-    public async Task ManualButtonReleasesExactlyOneWaitingCapture()
-    {
-        var state=new LongShotCaptureModeState();
-        var wait=state.WaitForNextActionAsync(CancellationToken.None);
-        Assert.True(state.RequestManualCapture());
-        Assert.False(state.RequestManualCapture());
-        Assert.Equal(LongShotCaptureAction.ManualCapture,await wait);
-        Assert.False(state.RequestManualCapture());
-    }
-
-    [Fact]
-    public async Task SwitchingToAutomaticWakesManualWaiter()
-    {
-        var state=new LongShotCaptureModeState();
-        var wait=state.WaitForNextActionAsync(CancellationToken.None);
-        state.SetMode(LongShotCaptureMode.Automatic);
-        Assert.Equal(LongShotCaptureAction.AutomaticStep,await wait);
-        Assert.Equal(LongShotCaptureAction.AutomaticStep,await state.WaitForNextActionAsync(CancellationToken.None));
-    }
-
-    [Fact]
-    public async Task SwitchingBackToManualRequiresANewButtonClick()
-    {
-        var state=new LongShotCaptureModeState();
-        state.SetMode(LongShotCaptureMode.Automatic);
-        Assert.Equal(LongShotCaptureAction.AutomaticStep,await state.WaitForNextActionAsync(CancellationToken.None));
-        state.SetMode(LongShotCaptureMode.Manual);
-
-        var wait=state.WaitForNextActionAsync(CancellationToken.None);
-        Assert.False(wait.IsCompleted);Assert.True(state.RequestManualCapture());
-        Assert.Equal(LongShotCaptureAction.ManualCapture,await wait);
-    }
-
-    [Fact]
-    public async Task CancellationEndsAManualWaitWithoutLeavingAStaleRequest()
+    [Fact] public async Task CancelRemovesWaiterAndAllowsNextSession()
     {
         var state=new LongShotCaptureModeState();using var cancellation=new CancellationTokenSource();
-        var wait=state.WaitForNextActionAsync(cancellation.Token);cancellation.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>wait);
-        Assert.False(state.RequestManualCapture());
+        var waiting=state.WaitAsync(cancellation.Token);cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>waiting);
+        Assert.False(state.Request(LongShotCaptureAction.Capture));
+        var next=state.WaitAsync(CancellationToken.None);Assert.True(state.Request(LongShotCaptureAction.Finish));
+        Assert.Equal(LongShotCaptureAction.Finish,await next);
     }
-
-    [Fact]
-    public async Task CaptureAndFinishInterruptsAWaitingManualCapture()
+    [Theory][InlineData(false)][InlineData(true)]
+    public void ConfirmUndoAndExportRetainCorrectOrder(bool up)
     {
-        var state=new LongShotCaptureModeState();
-        var wait=state.WaitForNextActionAsync(CancellationToken.None);
-        Assert.True(state.RequestCaptureAndFinish());
-        Assert.Equal(LongShotCaptureAction.CaptureAndFinish,await wait);
+        var s=new ReviewedLongShotSession(up);s.AddFirst("first");
+        var seam=new ConfirmedLongShotSeam(up?"next":"first",up?"first":"next",200,350,LongShotAlignmentSource.ManualAnchors,0);
+        s.Add("next",seam,600);
+        Assert.Equal(up?new[]{"next","first"}:new[]{"first","next"},s.Export().Frames);
+        Assert.Equal(800,s.OutputHeight(600));
+        Assert.Equal("next",s.Undo());Assert.Single(s.Export().Frames);Assert.Empty(s.Export().Seams);
+        Assert.Null(s.Undo());
     }
-
-    [Fact]
-    public async Task FinishRequestedDuringAutomaticStepIsDeliveredNext()
+    [Fact] public void UnrelatedSeamCannotBeAccepted()
     {
-        var state=new LongShotCaptureModeState();state.SetMode(LongShotCaptureMode.Automatic);
-        Assert.Equal(LongShotCaptureAction.AutomaticStep,await state.WaitForNextActionAsync(CancellationToken.None));
-        Assert.True(state.RequestFinishWithoutCapture());
-        Assert.Equal(LongShotCaptureAction.FinishWithoutCapture,await state.WaitForNextActionAsync(CancellationToken.None));
+        var s=new ReviewedLongShotSession(false);s.AddFirst("first");
+        Assert.Throws<InvalidOperationException>(()=>s.Add("next",new("other","next",200,350,LongShotAlignmentSource.Suggested,1),600));
+        Assert.Single(s.Frames);
     }
-
-    [Fact]
-    public void SessionGateAllowsOnlyOneCaptureUntilReleased()
+    [Fact] public void SessionGateAllowsOnlyOneCapture()
     {
-        var gate=new LongShotSessionGate();
-        Assert.True(gate.TryEnter());Assert.True(gate.IsActive);
-        Assert.False(gate.TryEnter());
-        gate.Exit();Assert.False(gate.IsActive);Assert.True(gate.TryEnter());
+        var gate=new LongShotSessionGate();Assert.True(gate.TryEnter());Assert.False(gate.TryEnter());
+        gate.Exit();Assert.True(gate.TryEnter());
     }
 }

@@ -195,6 +195,11 @@ foreach ($document in @('README.md','CHANGELOG.md','ACCEPTANCE-STATUS.md',"RELEA
     Copy-Item -LiteralPath $sourceDocument -Destination $publishRoot -Force
 }
 
+$longShotReport = Join-Path $workspace "LONGSHOT-ACCEPTANCE-v$version.md"
+if (Test-Path -LiteralPath $longShotReport -PathType Leaf) {
+    Copy-Item -LiteralPath $longShotReport -Destination $publishRoot -Force
+}
+
 $thirdPartySource = Join-Path $workspace 'ThirdPartyLicenses'
 $licenseCount = Test-ThirdPartyLicenseBundle -BundleRoot $thirdPartySource -AllowUnresolved:$AllowUnresolvedRedistribution
 $thirdPartyDestination = Join-Path $publishRoot 'ThirdPartyLicenses'
