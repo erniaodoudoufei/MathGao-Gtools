@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>Gtools 图片剪贴板合成验收</title>
+<style>body{font:18px 'Segoe UI','Microsoft YaHei UI',sans-serif;margin:30px;background:#f5f7fb;color:#233348}main{display:flex;gap:30px}img{width:320px;height:320px;border:1px solid #bbb}textarea{display:block;width:640px;height:120px;font:18px monospace;margin-top:24px}</style>
+<h1>Gtools 图片剪贴板合成验收</h1>
+<p>在两张图片上依次右键 → 复制图片。每张原图为 2048 × 2048 像素，只有合成编号和图案。</p>
+<main><section><h2>合成图片 A · 蓝色</h2><img id="a" alt="合成图片 A 蓝色"></section><section><h2>合成图片 B · 橙色</h2><img id="b" alt="合成图片 B 橙色"></section></main>
+<textarea placeholder="文字混合测试输入区"></textarea>
+<script>
+for(const [id,color] of [['a','#2765b0'],['b','#dc7031']]){const c=document.createElement('canvas');c.width=c.height=2048;const x=c.getContext('2d');x.fillStyle=color;x.fillRect(0,0,2048,2048);x.fillStyle='white';x.font='bold 170px sans-serif';x.fillText('Gtools TEST '+id.toUpperCase(),120,360);for(let i=0;i<16;i++){x.fillRect(120,520+i*80,700+i*45,16);}document.getElementById(id).src=c.toDataURL('image/png');}
+</script></html>

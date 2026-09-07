@@ -8,7 +8,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-`v1.1.9` 已公开；`v1.1.10` 为本地微信长截图验收版，真实微信验收完成后再发布源码标签。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
+`v1.1.9` 已公开；当前本地版本 `v1.1.11` 优化图片剪贴板延迟，并包含 `v1.1.10` 的长截图改造。真实微信长截图验收仍待完成，完成后再发布源码标签。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
 
 当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
 
@@ -60,11 +60,15 @@ Google 通道直接请求 `translate.google.com` 的免密钥非官方网页端�
 - QQ、Generic 配置仍可读取，但本轮只验收微信；网页、PDF、OneNote及任意软件自动滚动不在本轮范围。
 - 懒加载、动态图像及内容重新排版可能需要重采；没有共同内容的两张截图不能自动补出中间丢失的消息。
 
-## 历史剪贴板 1.1.6
+## 历史剪贴板 1.1.11
 
 历史窗口先绘制工具栏、表头和加载提示，再从后台读取轻量列表；列表查询不再加载完整文字、HTML、RTF 或图片 BLOB。图片缩略图只在对应行滚动到可见区域时按需读取和解码，因此即使数据库包含大量截图，也不会在按下 `Ctrl+~` 后长时间显示空白窗口。
 
-搜索输入采用短暂防抖，收藏、删除、清空和恢复内容均在需要时后台读取；连续按快捷键只会激活同一个历史窗口。复制图片时，界面线程只制作可跨线程使用的像素快照，PNG 压缩、哈希和 SQLite 写入按顺序在后台完成，降低复制大图造成的界面停顿。
+搜索输入采用短暂防抖，收藏、删除、清空和恢复内容均在需要时后台读取；连续按快捷键只会激活同一个历史窗口。图片读取使用独立 STA 线程，在系统剪贴板锁内复制当前格式的数据；PNG 已有编码直接复用，Bitmap/DIB 则在后台转换后入库。读取被占用时有限重试，连续通知按序号去重，已捕获内容按顺序保存。
+
+面板底部会显示“已捕获，正在保存 N 条”或失败原因。保存后自动刷新，并保留搜索、所选记录和滚动位置；持续复制不会把刷新无限推迟。正常退出最多等待三秒排空已捕获内容，遇到失败或超时会提示。系统剪贴板已被覆盖且尚未读取的内容无法补回。
+
+合成测试、阶段耗时及真实浏览器/聊天软件验收状态见 [剪贴板验收记录](CLIPBOARD-ACCEPTANCE-v1.1.11.md)。手工复现素材在 `tools/clipboard-browser-test.html`，只包含两张 2048×2048 合成图片。
 
 ## 数据与隐私
 
@@ -102,7 +106,7 @@ dotnet test .\tests\Gtools.Tests\Gtools.Tests.csproj -c Release --no-build
 dotnet list .\Gtools.sln package --vulnerable --include-transitive
 ```
 
-本地评估目录为 `artifacts\Gtools-1.1.10`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
+本地评估目录为 `artifacts\Gtools-1.1.11`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
 
 诊断启动可使用 `Gtools.exe --test-profile <目录> --diagnostics --show-dashboard`。测试配置不会读写正式 `%LOCALAPPDATA%\Gtools`，也不会修改开机启动设置。请勿公开提交原始诊断日志；日志可能包含本机路径和运行环境信息。
 

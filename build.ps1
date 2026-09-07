@@ -195,9 +195,11 @@ foreach ($document in @('README.md','CHANGELOG.md','ACCEPTANCE-STATUS.md',"RELEA
     Copy-Item -LiteralPath $sourceDocument -Destination $publishRoot -Force
 }
 
-$longShotReport = Join-Path $workspace "LONGSHOT-ACCEPTANCE-v$version.md"
-if (Test-Path -LiteralPath $longShotReport -PathType Leaf) {
-    Copy-Item -LiteralPath $longShotReport -Destination $publishRoot -Force
+foreach ($reportName in @('LONGSHOT-ACCEPTANCE-v1.1.10.md',"CLIPBOARD-ACCEPTANCE-v$version.md")) {
+    $featureReport = Join-Path $workspace $reportName
+    if (Test-Path -LiteralPath $featureReport -PathType Leaf) {
+        Copy-Item -LiteralPath $featureReport -Destination $publishRoot -Force
+    }
 }
 
 $thirdPartySource = Join-Path $workspace 'ThirdPartyLicenses'

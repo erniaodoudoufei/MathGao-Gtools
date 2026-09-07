@@ -67,7 +67,10 @@ public partial class App : System.Windows.Application
         _modules.Register(new DelegateDesktopModule("translation","截图翻译",()=>_settings.Current.TranslationEnabled,_=>Task.CompletedTask,_=>Task.CompletedTask,_=>Task.FromResult(new ModuleStatus(ModuleHealth.Healthy,$"Provider: {_settings.Current.TranslationProvider}",DateTimeOffset.Now))));
         _modules.Register(new DelegateDesktopModule("vocabulary","英语生词本",()=>true,_=>Task.CompletedTask,_=>Task.CompletedTask,_=>Task.FromResult(new ModuleStatus(File.Exists(AppPaths.DatabaseFile)?ModuleHealth.Healthy:ModuleHealth.Degraded,"SQLite 本机存储",DateTimeOffset.Now))));
         _modules.Register(new DelegateDesktopModule("longshot","聊天长截图",()=>_settings.Current.LongShotEnabled,_=>Task.CompletedTask,_=>Task.CompletedTask,_=>WorkerHealth("Gtools.LongShotWorker",$"{_settings.Current.LongShotProfile} · 按需启动")));
-        _modules.Register(new DelegateDesktopModule("clipboard","历史剪贴板",()=>_settings.Current.ClipboardEnabled,_=>{_clipboard!.Paused=false;return Task.CompletedTask;},_=>{_clipboard!.Paused=true;return Task.CompletedTask;},_=>Task.FromResult(new ModuleStatus(_clipboard!.Paused?ModuleHealth.Degraded:ModuleHealth.Healthy,$"SQLite {_db.DatabaseSizeBytes/1024d/1024:0.0} MB",DateTimeOffset.Now))));
+        _modules.Register(new DelegateDesktopModule("clipboard","历史剪贴板",()=>_settings.Current.ClipboardEnabled,_=>{_clipboard!.Paused=false;return Task.CompletedTask;},_=>{_clipboard!.Paused=true;return Task.CompletedTask;},_=>
+        {
+            var state=_clipboard!.State;return Task.FromResult(new ModuleStatus(_clipboard.Paused||state.LastError is not null?ModuleHealth.Degraded:ModuleHealth.Healthy,$"SQLite {_db.DatabaseSizeBytes/1024d/1024:0.0} MB · {state.Message}",DateTimeOffset.Now));
+        }));
         // 流量条和待办是两个独立模块，但共用同一个悬浮窗：各自控制自己那一块的显隐，都关掉窗口才整个隐藏。
         _modules.Register(new DelegateDesktopModule("monitor","性能悬浮条",()=>_settings.Current.MonitorEnabled,
             _=>{Dock().ShowMonitor(true);return Task.CompletedTask;},
@@ -206,7 +209,13 @@ public partial class App : System.Windows.Application
     private async Task ApplyModulesAsync(){await _modules.SynchronizeAsync();}
     private async void ExitApplication()
     {
-        if(_exiting)return;_exiting=true;try{await _modules.DisposeAsync();}catch{}if(_tray is not null){_tray.Visible=false;_tray.Dispose();}_clipboard?.Dispose();_hotkeys?.Dispose();_googleTranslation.Dispose();_dock?.Close();ReleaseMutex();Shutdown();
+        if(_exiting)return;_exiting=true;
+        if(_clipboard is not null)
+        {
+            var drained=await _clipboard.StopAsync();
+            if(!drained)MessageBox.Show(_clipboard.State.LastError??"部分剪贴板记录未能保存。","Gtools · 剪贴板保存提示",MessageBoxButton.OK,MessageBoxImage.Warning);
+        }
+        try{await _modules.DisposeAsync();}catch{}if(_tray is not null){_tray.Visible=false;_tray.Dispose();}_clipboard?.Dispose();_hotkeys?.Dispose();_googleTranslation.Dispose();_dock?.Close();ReleaseMutex();Shutdown();
     }
     private void ReleaseMutex(){try{_mutex?.ReleaseMutex();}catch{}finally{_mutex?.Dispose();_mutex=null;}}
     protected override void OnExit(ExitEventArgs e){try{if(_tray is not null)_tray.Visible=false;}catch{}try{_googleTranslation.Dispose();}catch{}DiagnosticLog.Write("app","exit","Gtools 已退出");ReleaseMutex();base.OnExit(e);}

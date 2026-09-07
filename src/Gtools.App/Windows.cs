@@ -583,6 +583,9 @@ internal sealed class ClipboardWindow : Window
     private readonly LocalDatabase _db;private readonly ClipboardHistoryService _service;
     private readonly DataGrid _grid=new(){AutoGenerateColumns=false,IsReadOnly=true,RowHeight=64,EnableRowVirtualization=true,EnableColumnVirtualization=true};
     private readonly TextBox _search=new();private readonly TextBlock _status=Ui.Text("正在加载历史记录…",12);
+    private readonly TextBlock _saveStatus=Ui.Text("",12);
+    private readonly DispatcherTimer _historyTimer=new(){Interval=TimeSpan.FromMilliseconds(100)};
+    private bool _historyDirty,_pasting;
     private readonly Func<string,int,IReadOnlyList<ClipboardEntrySummary>> _searchHistory;
     private readonly CancellationTokenSource _lifetime=new();private CancellationTokenSource? _refresh;
     private readonly IntPtr _returnTo;private int _refreshGeneration;private bool _initialLoadStarted;
@@ -595,7 +598,7 @@ internal sealed class ClipboardWindow : Window
         var root=new DockPanel{Margin=new Thickness(8)};var top=new StackPanel{Orientation=Orientation.Horizontal};_search.Width=300;_search.TextChanged+=(_,_)=>QueueRefresh(180);top.Children.Add(_search);
         top.Children.Add(Ui.Button("粘贴",async(_,_)=>await Paste()));top.Children.Add(Ui.Button("收藏/取消",async(_,_)=>await Favorite()));top.Children.Add(Ui.Button("删除",async(_,_)=>await Delete()));top.Children.Add(Ui.Button("清空未收藏",async(_,_)=>await MutateAsync(_db.ClearClipboard,"正在清理未收藏记录…")));
         top.Children.Add(Ui.Button(service.Paused?"继续记录":"暂停记录",(s,_)=>{service.Paused=!service.Paused;((Button)s).Content=service.Paused?"继续记录":"暂停记录";}));DockPanel.SetDock(top,Dock.Top);root.Children.Add(top);
-        _status.Foreground=Brushes.DimGray;DockPanel.SetDock(_status,Dock.Bottom);root.Children.Add(_status);
+        _status.Foreground=Brushes.DimGray;var statusPanel=new StackPanel();statusPanel.Children.Add(_status);statusPanel.Children.Add(_saveStatus);DockPanel.SetDock(statusPanel,Dock.Bottom);root.Children.Add(statusPanel);
         _grid.LoadingRow+=(_,e)=>{if(e.Row.Item is ClipboardViewRow row)_=row.EnsureThumbnailAsync(_db,_lifetime.Token);};
         _grid.MouseDoubleClick+=async(_,_)=>await Paste();_grid.KeyDown+=async(_,e)=>{if(e.Key==Key.Enter){e.Handled=true;await Paste();}};root.Children.Add(_grid);Content=root;
         _search.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Down&&_grid.Items.Count>0){_grid.SelectedIndex=Math.Max(0,_grid.SelectedIndex);_grid.Focus();_grid.ScrollIntoView(_grid.SelectedItem);e.Handled=true;}};
@@ -603,14 +606,22 @@ internal sealed class ClipboardWindow : Window
         // ContentRendered runs only after WPF has painted the toolbar, headers and loading text. The
         // database query therefore cannot produce the empty white client area seen in older builds.
         ContentRendered+=(_,_)=>{if(_initialLoadStarted)return;_initialLoadStarted=true;QueueRefresh(0);};
-        _service.Updated+=OnUpdated;Closed+=(_,_)=>{_service.Updated-=OnUpdated;_refresh?.Cancel();_lifetime.Cancel();};
+        _historyTimer.Tick+=(_,_)=>{_historyTimer.Stop();if(_refresh is not null||!_initialLoadStarted)return;_historyDirty=false;QueueRefresh(0);};
+        _service.Updated+=OnUpdated;_service.StateChanged+=OnSaveStateChanged;ShowSaveState();
+        Closed+=(_,_)=>{_service.Updated-=OnUpdated;_service.StateChanged-=OnSaveStateChanged;_historyTimer.Stop();_refresh?.Cancel();_lifetime.Cancel();};
     }
     internal void FocusSearch(){Activate();_search.Focus();_search.SelectAll();}
     internal string StatusText=>_status.Text;internal int VisibleRowCount=>_grid.Items.Count;
+    internal string SaveStatusText=>_saveStatus.Text;
+    private void OnSaveStateChanged(object? sender,EventArgs e)
+    {
+        if(!_lifetime.IsCancellationRequested)_=Dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>{if(!_lifetime.IsCancellationRequested)ShowSaveState();}));
+    }
+    private void ShowSaveState(){var state=_service.State;_saveStatus.Text=state.Message;_saveStatus.Foreground=state.LastError is not null?Brushes.Firebrick:state.PendingCount>0?Brushes.DarkSlateBlue:Brushes.DimGray;}
     private void OnUpdated(object? s,EventArgs e)
     {
         if(_lifetime.IsCancellationRequested)return;
-        _=Dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>QueueRefresh(100)));
+        _=Dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>{if(_lifetime.IsCancellationRequested)return;_historyDirty=true;if(!_historyTimer.IsEnabled)_historyTimer.Start();}));
     }
     private void BuildColumns()
     {
@@ -630,37 +641,54 @@ internal sealed class ClipboardWindow : Window
         try
         {
             if(delayMilliseconds>0)await Task.Delay(delayMilliseconds,owner.Token);
-            var selectedId=(_grid.SelectedItem as ClipboardViewRow)?.Id;
             if(_grid.ItemsSource is not null)_status.Text="正在更新历史记录…";
             var summaries=await Task.Run(()=>_searchHistory(query,100),owner.Token);
             owner.Token.ThrowIfCancellationRequested();if(generation!=_refreshGeneration)return;
-            var rows=summaries.Select(x=>new ClipboardViewRow(x)).ToArray();_grid.ItemsSource=rows;
+            // Capture the latest selection/viewport after the query; the user may have scrolled meanwhile.
+            var selectedId=(_grid.SelectedItem as ClipboardViewRow)?.Id;
+            var scroll=FindHistoryScroll(_grid);var scrollOffset=scroll?.VerticalOffset??0;
+            var previousRows=_grid.Items.OfType<ClipboardViewRow>().ToArray();
+            var anchorIndex=(int)Math.Floor(scrollOffset);var anchorId=anchorIndex<previousRows.Length?previousRows[anchorIndex].Id:(long?)null;
+            var existing=previousRows.ToDictionary(x=>x.Id);
+            var rows=summaries.Select(x=>existing.TryGetValue(x.Id,out var row)&&row.Matches(x)?row:new ClipboardViewRow(x)).ToArray();_grid.ItemsSource=rows;
             if(selectedId is not null)
             {
-                var selected=rows.FirstOrDefault(x=>x.Id==selectedId.Value);if(selected is not null){_grid.SelectedItem=selected;_grid.ScrollIntoView(selected);}
+                var selected=rows.FirstOrDefault(x=>x.Id==selectedId.Value);if(selected is not null)_grid.SelectedItem=selected;
+            }
+            if(scroll is not null)
+            {
+                var index=anchorId is {} id?Array.FindIndex(rows,x=>x.Id==id):-1;
+                scroll.ScrollToVerticalOffset(scrollOffset>0&&index>=0?index+scrollOffset-anchorIndex:scrollOffset);
             }
             Title=$"Gtools · 历史剪贴板 · {_db.DatabaseSizeBytes/1024d/1024:0.0} MB";
             _status.Text=rows.Length==0?(string.IsNullOrWhiteSpace(query)?"还没有剪贴板记录。":"没有匹配的历史记录。"):$"显示 {rows.Length} 条 · 图片缩略图按可见行加载";
             _status.Foreground=Brushes.DimGray;
+            var savedAt=_service.State.LastSavedAt;if(savedAt>0)DiagnosticLog.Write("clipboard","history.updated","历史面板已更新",data:new Dictionary<string,object?>{{"rows",rows.Length},{"sinceSavedMs",Stopwatch.GetElapsedTime(savedAt).TotalMilliseconds}});
         }
         catch(OperationCanceledException) when(owner.IsCancellationRequested){}
         catch(Exception ex)
         {
             if(!_lifetime.IsCancellationRequested){_grid.ItemsSource=Array.Empty<ClipboardViewRow>();_status.Text="加载失败："+ex.Message;_status.Foreground=Brushes.Firebrick;DiagnosticLog.Write("clipboard","history.load.failed",ex.Message,"Error");}
         }
-        finally{if(ReferenceEquals(_refresh,owner))_refresh=null;owner.Dispose();}
+        finally{if(ReferenceEquals(_refresh,owner)){_refresh=null;if(_historyDirty&&!_lifetime.IsCancellationRequested&&!_historyTimer.IsEnabled)_historyTimer.Start();}owner.Dispose();}
+    }
+    private static ScrollViewer? FindHistoryScroll(DependencyObject root)
+    {
+        for(var i=0;i<VisualTreeHelper.GetChildrenCount(root);i++){var child=VisualTreeHelper.GetChild(root,i);if(child is ScrollViewer scroll)return scroll;var nested=FindHistoryScroll(child);if(nested is not null)return nested;}return null;
     }
     private async Task Paste()
     {
-        if(_grid.SelectedItem is not ClipboardViewRow row)return;
+        if(_pasting||_grid.SelectedItem is not ClipboardViewRow row)return;
+        _pasting=true;
         try
         {
             _status.Text="正在恢复所选内容…";var entry=await Task.Run(()=>_db.GetClipboard(row.Id),_lifetime.Token);
-            if(entry is null){QueueRefresh(0);return;}_service.Restore(entry);Close();await Task.Delay(100);
+            if(entry is null){QueueRefresh(0);return;}await _service.RestoreAsync(entry);Close();await Task.Delay(100);
             NativeMethods.ShowWindow(_returnTo,NativeMethods.SW_RESTORE);NativeMethods.SetForegroundWindow(_returnTo);await Task.Delay(80);NativeMethods.Paste();
         }
         catch(OperationCanceledException) when(_lifetime.IsCancellationRequested){}
         catch(Exception ex){_status.Text="恢复失败："+ex.Message;_status.Foreground=Brushes.Firebrick;DiagnosticLog.Write("clipboard","history.restore.failed",ex.Message,"Error");}
+        finally{_pasting=false;}
     }
     private async Task Favorite(){if(_grid.SelectedItem is ClipboardViewRow row)await MutateAsync(()=>_db.SetClipboardFavorite(row.Id,!row.IsFavorite),"正在更新收藏…");}
     private async Task Delete(){if(_grid.SelectedItem is ClipboardViewRow row)await MutateAsync(()=>_db.DeleteClipboard(row.Id),"正在删除…");}
@@ -677,6 +705,7 @@ internal sealed class ClipboardViewRow : System.ComponentModel.INotifyPropertyCh
     private static readonly SemaphoreSlim ThumbnailGate=new(2,2);
     private readonly ClipboardEntrySummary _entry;private BitmapSource? _thumbnail;private int _thumbnailState;
     public ClipboardViewRow(ClipboardEntrySummary entry){_entry=entry;}
+    internal bool Matches(ClipboardEntrySummary entry)=>_entry==entry;
     public long Id=>_entry.Id;public bool IsFavorite=>_entry.IsFavorite;public string Favorite=>IsFavorite?"★":"";
     public string Preview=>_entry.Preview;public string Kind=>_entry.Kind;public string Time=>_entry.CreatedAt.LocalDateTime.ToString("MM-dd HH:mm");
     public BitmapSource? Thumbnail{get=>_thumbnail;private set{_thumbnail=value;PropertyChanged?.Invoke(this,new(nameof(Thumbnail)));}}
