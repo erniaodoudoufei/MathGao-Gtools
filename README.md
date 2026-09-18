@@ -8,7 +8,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-`v1.1.9` 已公开；当前本地版本 `v1.1.11` 优化图片剪贴板延迟，并包含 `v1.1.10` 的长截图改造。真实微信长截图验收仍待完成，完成后再发布源码标签。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
+`v1.1.9` 已公开；当前本地版本 `v1.1.12` 支持历史剪贴板“用过即前移”，并包含之前的图片保存优化和长截图改造。真实微信长截图验收仍待完成，完成后再发布源码标签。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
 
 当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
 
@@ -60,7 +60,11 @@ Google 通道直接请求 `translate.google.com` 的免密钥非官方网页端�
 - QQ、Generic 配置仍可读取，但本轮只验收微信；网页、PDF、OneNote及任意软件自动滚动不在本轮范围。
 - 懒加载、动态图像及内容重新排版可能需要重采；没有共同内容的两张截图不能自动补出中间丢失的消息。
 
-## 历史剪贴板 1.1.11
+## 历史剪贴板 1.1.12
+
+历史记录按最近复制或使用排列。双击、按 Enter 或点击“粘贴”恢复内容成功后，该条原记录移到第一条，下次打开及重启后仍保留顺序；不生成副本，不改变图片、富文本、原始复制时间和收藏状态。收藏不再固定置顶，但仍不会被自动清理；数量上限不变，清理以最近活动顺序判断。仅选择、查看、收藏/取消收藏不算使用，其他软件中的普通 Ctrl+V 也不会被监听。
+
+首次启动新版会为旧库原地补充排序字段，无需手动迁移。恢复剪贴板失败时不前移；内容已恢复但排序写入失败时会提示，仍继续回贴。排序与回贴联动验收见 [1.1.12 剪贴板验收记录](CLIPBOARD-ACCEPTANCE-v1.1.12.md)。
 
 历史窗口先绘制工具栏、表头和加载提示，再从后台读取轻量列表；列表查询不再加载完整文字、HTML、RTF 或图片 BLOB。图片缩略图只在对应行滚动到可见区域时按需读取和解码，因此即使数据库包含大量截图，也不会在按下 `Ctrl+~` 后长时间显示空白窗口。
 
@@ -106,7 +110,7 @@ dotnet test .\tests\Gtools.Tests\Gtools.Tests.csproj -c Release --no-build
 dotnet list .\Gtools.sln package --vulnerable --include-transitive
 ```
 
-本地评估目录为 `artifacts\Gtools-1.1.11`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
+本地评估目录为 `artifacts\Gtools-1.1.12`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
 
 诊断启动可使用 `Gtools.exe --test-profile <目录> --diagnostics --show-dashboard`。测试配置不会读写正式 `%LOCALAPPDATA%\Gtools`，也不会修改开机启动设置。请勿公开提交原始诊断日志；日志可能包含本机路径和运行环境信息。
 

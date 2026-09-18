@@ -587,16 +587,20 @@ internal sealed class ClipboardWindow : Window
     private readonly DispatcherTimer _historyTimer=new(){Interval=TimeSpan.FromMilliseconds(100)};
     private bool _historyDirty,_pasting;
     private readonly Func<string,int,IReadOnlyList<ClipboardEntrySummary>> _searchHistory;
+    private readonly Func<IntPtr,Task> _pasteToTarget;
+    private readonly Action<string> _showWarning;
     private readonly CancellationTokenSource _lifetime=new();private CancellationTokenSource? _refresh;
     private readonly IntPtr _returnTo;private int _refreshGeneration;private bool _initialLoadStarted;
     public ClipboardWindow(LocalDatabase db,ClipboardHistoryService service,IntPtr returnTo,
-        Func<string,int,IReadOnlyList<ClipboardEntrySummary>>? searchHistory=null)
+        Func<string,int,IReadOnlyList<ClipboardEntrySummary>>? searchHistory=null,
+        Func<IntPtr,Task>? pasteToTarget=null,Action<string>? showWarning=null)
     {
         _db=db;_service=service;_returnTo=returnTo;_searchHistory=searchHistory??db.SearchClipboardSummaries;
+        _pasteToTarget=pasteToTarget??PasteToTargetAsync;_showWarning=showWarning??(text=>new ToastWindow(text).Show());
         Title="Gtools · 历史剪贴板";Width=850;Height=520;WindowStartupLocation=WindowStartupLocation.CenterScreen;Topmost=true;BuildColumns();
         VirtualizingPanel.SetIsVirtualizing(_grid,true);VirtualizingPanel.SetVirtualizationMode(_grid,VirtualizationMode.Recycling);ScrollViewer.SetCanContentScroll(_grid,true);
         var root=new DockPanel{Margin=new Thickness(8)};var top=new StackPanel{Orientation=Orientation.Horizontal};_search.Width=300;_search.TextChanged+=(_,_)=>QueueRefresh(180);top.Children.Add(_search);
-        top.Children.Add(Ui.Button("粘贴",async(_,_)=>await Paste()));top.Children.Add(Ui.Button("收藏/取消",async(_,_)=>await Favorite()));top.Children.Add(Ui.Button("删除",async(_,_)=>await Delete()));top.Children.Add(Ui.Button("清空未收藏",async(_,_)=>await MutateAsync(_db.ClearClipboard,"正在清理未收藏记录…")));
+        top.Children.Add(Ui.Button("粘贴",async(_,_)=>await Paste()));var favoriteButton=Ui.Button("收藏/取消",async(_,_)=>await Favorite());favoriteButton.ToolTip="收藏不会固定置顶，但不会被自动清理。";top.Children.Add(favoriteButton);top.Children.Add(Ui.Button("删除",async(_,_)=>await Delete()));top.Children.Add(Ui.Button("清空未收藏",async(_,_)=>await MutateAsync(_db.ClearClipboard,"正在清理未收藏记录…")));
         top.Children.Add(Ui.Button(service.Paused?"继续记录":"暂停记录",(s,_)=>{service.Paused=!service.Paused;((Button)s).Content=service.Paused?"继续记录":"暂停记录";}));DockPanel.SetDock(top,Dock.Top);root.Children.Add(top);
         _status.Foreground=Brushes.DimGray;var statusPanel=new StackPanel();statusPanel.Children.Add(_status);statusPanel.Children.Add(_saveStatus);DockPanel.SetDock(statusPanel,Dock.Bottom);root.Children.Add(statusPanel);
         _grid.LoadingRow+=(_,e)=>{if(e.Row.Item is ClipboardViewRow row)_=row.EnsureThumbnailAsync(_db,_lifetime.Token);};
@@ -661,7 +665,7 @@ internal sealed class ClipboardWindow : Window
                 scroll.ScrollToVerticalOffset(scrollOffset>0&&index>=0?index+scrollOffset-anchorIndex:scrollOffset);
             }
             Title=$"Gtools · 历史剪贴板 · {_db.DatabaseSizeBytes/1024d/1024:0.0} MB";
-            _status.Text=rows.Length==0?(string.IsNullOrWhiteSpace(query)?"还没有剪贴板记录。":"没有匹配的历史记录。"):$"显示 {rows.Length} 条 · 图片缩略图按可见行加载";
+            _status.Text=rows.Length==0?(string.IsNullOrWhiteSpace(query)?"还没有剪贴板记录。":"没有匹配的历史记录。"):$"显示 {rows.Length} 条 · 最近复制或使用优先 · 图片缩略图按需加载";
             _status.Foreground=Brushes.DimGray;
             var savedAt=_service.State.LastSavedAt;if(savedAt>0)DiagnosticLog.Write("clipboard","history.updated","历史面板已更新",data:new Dictionary<string,object?>{{"rows",rows.Length},{"sinceSavedMs",Stopwatch.GetElapsedTime(savedAt).TotalMilliseconds}});
         }
@@ -683,12 +687,19 @@ internal sealed class ClipboardWindow : Window
         try
         {
             _status.Text="正在恢复所选内容…";var entry=await Task.Run(()=>_db.GetClipboard(row.Id),_lifetime.Token);
-            if(entry is null){QueueRefresh(0);return;}await _service.RestoreAsync(entry);Close();await Task.Delay(100);
-            NativeMethods.ShowWindow(_returnTo,NativeMethods.SW_RESTORE);NativeMethods.SetForegroundWindow(_returnTo);await Task.Delay(80);NativeMethods.Paste();
+            if(entry is null){QueueRefresh(0);return;}
+            var result=await _service.RestoreAsync(entry);Close();
+            try{await _pasteToTarget(_returnTo);}
+            finally{if(result.Warning is not null)_showWarning(result.Warning);}
         }
         catch(OperationCanceledException) when(_lifetime.IsCancellationRequested){}
-        catch(Exception ex){_status.Text="恢复失败："+ex.Message;_status.Foreground=Brushes.Firebrick;DiagnosticLog.Write("clipboard","history.restore.failed",ex.Message,"Error");}
+        catch(Exception ex){_status.Text="恢复失败："+ex.Message;_status.Foreground=Brushes.Firebrick;if(!IsVisible)_showWarning(_status.Text);DiagnosticLog.Write("clipboard","history.restore.failed",ex.Message,"Error");}
         finally{_pasting=false;}
+    }
+    private static async Task PasteToTargetAsync(IntPtr target)
+    {
+        await Task.Delay(100);NativeMethods.ShowWindow(target,NativeMethods.SW_RESTORE);
+        NativeMethods.SetForegroundWindow(target);await Task.Delay(80);NativeMethods.Paste();
     }
     private async Task Favorite(){if(_grid.SelectedItem is ClipboardViewRow row)await MutateAsync(()=>_db.SetClipboardFavorite(row.Id,!row.IsFavorite),"正在更新收藏…");}
     private async Task Delete(){if(_grid.SelectedItem is ClipboardViewRow row)await MutateAsync(()=>_db.DeleteClipboard(row.Id),"正在删除…");}

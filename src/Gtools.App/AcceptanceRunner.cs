@@ -19,6 +19,7 @@ internal sealed class AcceptanceRunner(LocalDatabase database,DesktopModuleRegis
         },checks);
         await Check("diagnostics.write","结构化诊断日志",()=>{DiagnosticLog.Write("acceptance","write.probe","诊断写入探针");return Task.FromResult(DiagnosticLog.CurrentPath is not null&&File.Exists(DiagnosticLog.CurrentPath));},checks);
         await Check("database.persistence","生词与剪贴板持久化",()=>Task.FromResult(TestDatabase()),checks);
+        await Check("clipboard.recency","剪贴板最近使用排序与去重",()=>Task.FromResult(TestClipboardRecency()),checks);
         await Check("workers.available","隔离 Worker 可定位",()=>Task.FromResult(new[]{"Gtools.OcrWorker","Gtools.LongShotWorker"}.All(x=>File.Exists(WorkerLocator.Find(x)))),checks);
         await Check("modules.health","模块注册表健康状态",async()=>{var health=await modules.GetHealthAsync(token);return modules.Modules.Count==7&&health.Values.All(x=>x.Health!=ModuleHealth.Failed);},checks);
         await Check("ocr.ipc","PaddleOCR 命名管道与中英模型",async()=>
@@ -39,6 +40,23 @@ internal sealed class AcceptanceRunner(LocalDatabase database,DesktopModuleRegis
         var clip=new ClipboardEntry(0,"text",marker,marker,"<b>Gtools</b>","{\\rtf1 Gtools}",null,false,DateTimeOffset.Now,marker);
         var first=database.AddClipboard(clip,500);var duplicate=database.AddClipboard(clip,500);var search=database.SearchClipboard(marker).Any(x=>x.Hash==marker);
         foreach(var x in database.SearchClipboard(marker))database.DeleteClipboard(x.Id);return vocab&&first&&!duplicate&&search;
+    }
+
+    private bool TestClipboardRecency()
+    {
+        var marker="recency"+Guid.NewGuid().ToString("N");
+        var a=new ClipboardEntry(0,"text",marker+" old",marker+" old",null,null,null,false,DateTimeOffset.Now,marker+"a");
+        var b=a with{Preview=marker+" new",Text=marker+" new",Hash=marker+"b",IsFavorite=true};
+        try
+        {
+            if(!database.AddClipboard(a,500)||!database.AddClipboard(b,500))return false;
+            var rows=database.SearchClipboard(marker);var older=rows.Single(x=>x.Hash==a.Hash);var newer=rows.Single(x=>x.Hash==b.Hash);
+            if(!database.RecordClipboardUse(older.Id)||database.SearchClipboardSummaries(marker).First().Id!=older.Id)return false;
+            if(database.GetClipboard(older.Id)!=older)return false;
+            var duplicate=database.AddClipboard(b,500,out var changed);
+            return !duplicate&&changed&&database.SearchClipboard(marker).Count==2&&database.SearchClipboardSummaries(marker).First().Id==newer.Id;
+        }
+        finally{foreach(var row in database.SearchClipboard(marker))database.DeleteClipboard(row.Id);}
     }
 
     private static byte[] CreateOcrProbe()

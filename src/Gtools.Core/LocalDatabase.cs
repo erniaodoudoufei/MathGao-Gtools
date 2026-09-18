@@ -62,7 +62,7 @@ public sealed class LocalDatabase
         CREATE TRIGGER IF NOT EXISTS clipboard_ad AFTER DELETE ON clipboard_items BEGIN
           INSERT INTO clipboard_fts(clipboard_fts, rowid, preview, text_value) VALUES('delete', old.id, old.preview, old.text_value);
         END;
-        CREATE TRIGGER IF NOT EXISTS clipboard_au AFTER UPDATE ON clipboard_items BEGIN
+        CREATE TRIGGER IF NOT EXISTS clipboard_au AFTER UPDATE OF preview,text_value ON clipboard_items BEGIN
           INSERT INTO clipboard_fts(clipboard_fts, rowid, preview, text_value) VALUES('delete', old.id, old.preview, old.text_value);
           INSERT INTO clipboard_fts(rowid, preview, text_value) VALUES (new.id, new.preview, new.text_value);
         END;
@@ -72,7 +72,39 @@ public sealed class LocalDatabase
         CREATE INDEX IF NOT EXISTS ix_todo_order ON todo_items(sort_order);
         """;
         cmd.ExecuteNonQuery();
+        MigrateClipboardActivity(c);
         MigrateVocabulary(c);
+    }
+
+    private static void MigrateClipboardActivity(SqliteConnection connection)
+    {
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand(); command.Transaction = transaction;
+        command.CommandText = "PRAGMA table_info(clipboard_items)";
+        var hasActivityOrder = false;
+        using (var reader = command.ExecuteReader())
+            while (reader.Read()) hasActivityOrder |= reader.GetString(1).Equals("activity_order", StringComparison.OrdinalIgnoreCase);
+        // Preserve IDs, original timestamps, payloads and the existing FTS index in old databases.
+        if (!hasActivityOrder)
+        {
+            command.CommandText = "ALTER TABLE clipboard_items ADD COLUMN activity_order INTEGER NOT NULL DEFAULT 0;";
+            command.ExecuteNonQuery();
+        }
+        command.CommandText = """
+            DROP TRIGGER IF EXISTS clipboard_au;
+            CREATE TRIGGER clipboard_au AFTER UPDATE OF preview,text_value ON clipboard_items BEGIN
+              INSERT INTO clipboard_fts(clipboard_fts,rowid,preview,text_value) VALUES('delete',old.id,old.preview,old.text_value);
+              INSERT INTO clipboard_fts(rowid,preview,text_value) VALUES(new.id,new.preview,new.text_value);
+            END;
+            CREATE INDEX IF NOT EXISTS ix_clipboard_activity ON clipboard_items(activity_order DESC,id DESC);
+            """;
+        command.ExecuteNonQuery();
+        if (!hasActivityOrder)
+        {
+            command.CommandText = "UPDATE clipboard_items SET activity_order=id";
+            command.ExecuteNonQuery();
+        }
+        transaction.Commit();
     }
 
     // 1.1.0 的生词表没有音标和复习字段；老库需要就地补列，不能靠重建表丢数据。
@@ -162,32 +194,61 @@ public sealed class LocalDatabase
 
     public void DeleteVocabulary(long id) => Execute("DELETE FROM vocabulary WHERE id=$id", ("$id", id));
 
-    public bool AddClipboard(ClipboardEntry item, int limit)
+    public bool AddClipboard(ClipboardEntry item, int limit) => AddClipboard(item, limit, out _);
+
+    /// <summary>Returns whether a row was inserted; historyChanged also includes a deduplicated copy moving forward.</summary>
+    public bool AddClipboard(ClipboardEntry item, int limit, out bool historyChanged)
     {
+        historyChanged = false;
         try
         {
             using var c = Open(); using var tx = c.BeginTransaction(); using var cmd = c.CreateCommand(); cmd.Transaction = tx;
-            cmd.CommandText="SELECT content_hash FROM clipboard_items ORDER BY id DESC LIMIT 1";if((cmd.ExecuteScalar() as string)==item.Hash){tx.Rollback();return false;}cmd.Parameters.Clear();
-            cmd.CommandText = "INSERT INTO clipboard_items(kind,preview,text_value,html_value,rtf_value,image_png,is_favorite,created_at,content_hash) VALUES($k,$p,$t,$h,$r,$i,$f,$d,$x)";
+            // Deduplication remains relative to the last captured row, not the most recently used one.
+            cmd.CommandText = "SELECT id,content_hash FROM clipboard_items ORDER BY id DESC LIMIT 1";
+            long? duplicateId = null;
+            using (var reader = cmd.ExecuteReader())
+                if (reader.Read() && reader.GetString(1) == item.Hash) duplicateId = reader.GetInt64(0);
+            if (duplicateId is {} id)
+            {
+                UpdateClipboardActivity(cmd, id); tx.Commit(); historyChanged = true; return false;
+            }
+            cmd.CommandText = "INSERT INTO clipboard_items(kind,preview,text_value,html_value,rtf_value,image_png,is_favorite,created_at,content_hash,activity_order) VALUES($k,$p,$t,$h,$r,$i,$f,$d,$x,(SELECT COALESCE(MAX(activity_order),0)+1 FROM clipboard_items))";
             cmd.Parameters.AddWithValue("$k", item.Kind); cmd.Parameters.AddWithValue("$p", item.Preview);
             cmd.Parameters.AddWithValue("$t", (object?)item.Text ?? DBNull.Value); cmd.Parameters.AddWithValue("$h", (object?)item.Html ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$r", (object?)item.Rtf ?? DBNull.Value); cmd.Parameters.AddWithValue("$i", (object?)item.ImagePng ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$f", item.IsFavorite ? 1 : 0); cmd.Parameters.AddWithValue("$d", item.CreatedAt.ToString("O"));
             cmd.Parameters.AddWithValue("$x", item.Hash); cmd.ExecuteNonQuery();
-            cmd.Parameters.Clear(); cmd.CommandText = "DELETE FROM clipboard_items WHERE is_favorite=0 AND id NOT IN (SELECT id FROM clipboard_items ORDER BY id DESC LIMIT $limit)";
-            cmd.Parameters.AddWithValue("$limit", Math.Max(50, limit)); cmd.ExecuteNonQuery(); tx.Commit(); return true;
+            cmd.Parameters.Clear(); cmd.CommandText = "DELETE FROM clipboard_items WHERE is_favorite=0 AND id NOT IN (SELECT id FROM clipboard_items ORDER BY activity_order DESC,id DESC LIMIT $limit)";
+            cmd.Parameters.AddWithValue("$limit", Math.Max(50, limit)); cmd.ExecuteNonQuery(); tx.Commit(); historyChanged = true; return true;
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { return false; }
+    }
+
+    /// <summary>Moves the same record forward without changing its payload, hash or creation time.</summary>
+    public bool RecordClipboardUse(long id)
+    {
+        using var connection = Open(); using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand(); command.Transaction = transaction;
+        var changed = UpdateClipboardActivity(command, id);
+        transaction.Commit(); return changed;
+    }
+
+    private static bool UpdateClipboardActivity(SqliteCommand command, long id)
+    {
+        command.Parameters.Clear();
+        command.CommandText = "UPDATE clipboard_items SET activity_order=(SELECT COALESCE(MAX(activity_order),0)+1 FROM clipboard_items) WHERE id=$id";
+        command.Parameters.AddWithValue("$id", id);
+        return command.ExecuteNonQuery() != 0;
     }
 
     public IReadOnlyList<ClipboardEntry> SearchClipboard(string query = "", int count = 100)
     {
         using var c = Open(); using var cmd = c.CreateCommand();
         if (string.IsNullOrWhiteSpace(query))
-            cmd.CommandText = "SELECT id,kind,preview,text_value,html_value,rtf_value,image_png,is_favorite,created_at,content_hash FROM clipboard_items ORDER BY is_favorite DESC,id DESC LIMIT $n";
+            cmd.CommandText = "SELECT id,kind,preview,text_value,html_value,rtf_value,image_png,is_favorite,created_at,content_hash FROM clipboard_items ORDER BY activity_order DESC,id DESC LIMIT $n";
         else
         {
-            cmd.CommandText = "SELECT c.id,c.kind,c.preview,c.text_value,c.html_value,c.rtf_value,c.image_png,c.is_favorite,c.created_at,c.content_hash FROM clipboard_fts f JOIN clipboard_items c ON c.id=f.rowid WHERE clipboard_fts MATCH $q ORDER BY c.is_favorite DESC,c.id DESC LIMIT $n";
+            cmd.CommandText = "SELECT c.id,c.kind,c.preview,c.text_value,c.html_value,c.rtf_value,c.image_png,c.is_favorite,c.created_at,c.content_hash FROM clipboard_fts f JOIN clipboard_items c ON c.id=f.rowid WHERE clipboard_fts MATCH $q ORDER BY c.activity_order DESC,c.id DESC LIMIT $n";
             cmd.Parameters.AddWithValue("$q", string.Join(' ', query.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(EscapeFts)));
         }
         cmd.Parameters.AddWithValue("$n", count); using var r = cmd.ExecuteReader(); var list = new List<ClipboardEntry>();
@@ -199,10 +260,10 @@ public sealed class LocalDatabase
     {
         using var c = Open(); using var cmd = c.CreateCommand();
         if (string.IsNullOrWhiteSpace(query))
-            cmd.CommandText = "SELECT id,kind,preview,is_favorite,created_at,image_png IS NOT NULL FROM clipboard_items ORDER BY is_favorite DESC,id DESC LIMIT $n";
+            cmd.CommandText = "SELECT id,kind,preview,is_favorite,created_at,image_png IS NOT NULL FROM clipboard_items ORDER BY activity_order DESC,id DESC LIMIT $n";
         else
         {
-            cmd.CommandText = "SELECT c.id,c.kind,c.preview,c.is_favorite,c.created_at,c.image_png IS NOT NULL FROM clipboard_fts f JOIN clipboard_items c ON c.id=f.rowid WHERE clipboard_fts MATCH $q ORDER BY c.is_favorite DESC,c.id DESC LIMIT $n";
+            cmd.CommandText = "SELECT c.id,c.kind,c.preview,c.is_favorite,c.created_at,c.image_png IS NOT NULL FROM clipboard_fts f JOIN clipboard_items c ON c.id=f.rowid WHERE clipboard_fts MATCH $q ORDER BY c.activity_order DESC,c.id DESC LIMIT $n";
             cmd.Parameters.AddWithValue("$q", string.Join(' ', query.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(EscapeFts)));
         }
         cmd.Parameters.AddWithValue("$n", Math.Clamp(count,1,500));

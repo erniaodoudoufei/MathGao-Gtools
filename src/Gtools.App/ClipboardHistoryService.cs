@@ -9,14 +9,20 @@ using Gtools.Core;
 
 namespace Gtools.App;
 
+internal sealed record ClipboardRestoreResult(string? Warning = null);
+
 internal sealed class ClipboardHistoryService : IDisposable
 {
+    private sealed record SaveWork(ClipboardSnapshot? Snapshot=null,long? UsedId=null,TaskCompletionSource<ClipboardRestoreResult>? Completion=null);
+    private const string RecencyWarning="内容已恢复，但顺序保存失败；本次可能未移到最前。";
     private readonly LocalDatabase _db;
     private readonly Func<int> _limit;
     private readonly IClipboardReader _reader;
     private readonly bool _listen;
+    private readonly Func<ClipboardEntry,Task> _restore;
+    private readonly Func<long,bool> _recordUse;
     private readonly Func<ClipboardSnapshot,CancellationToken,Task<bool>> _persist;
-    private readonly Channel<ClipboardSnapshot> _queue=Channel.CreateUnbounded<ClipboardSnapshot>(new(){SingleReader=true,SingleWriter=true,AllowSynchronousContinuations=false});
+    private readonly Channel<SaveWork> _queue=Channel.CreateUnbounded<SaveWork>(new(){SingleReader=true,SingleWriter=true,AllowSynchronousContinuations=false});
     private readonly CancellationTokenSource _abort=new();
     private readonly TaskCompletionSource _ready=new(TaskCreationOptions.RunContinuationsAsynchronously),_threadExited=new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object _stateLock=new(),_stopLock=new();
@@ -35,9 +41,11 @@ internal sealed class ClipboardHistoryService : IDisposable
 
     public ClipboardHistoryService(LocalDatabase db,Func<int> limit):this(db,limit,null,null,true){}
     internal ClipboardHistoryService(LocalDatabase db,Func<int> limit,IClipboardReader? reader,
-        Func<ClipboardSnapshot,CancellationToken,Task<bool>>? persist=null,bool listen=false)
+        Func<ClipboardSnapshot,CancellationToken,Task<bool>>? persist=null,bool listen=false,
+        Func<ClipboardEntry,Task>? restore=null,Func<long,bool>? recordUse=null)
     {
         _db=db;_limit=limit;_reader=reader??new NativeClipboardReader(Guid.NewGuid().ToString("N"));_listen=listen;_persist=persist??PersistAsync;
+        _restore=restore??RestoreNativeAsync;_recordUse=recordUse??db.RecordClipboardUse;
         _writer=Task.Run(WriteLoopAsync);
         var thread=new Thread(ReadLoop){IsBackground=true,Name="Gtools Clipboard STA"};thread.SetApartmentState(ApartmentState.STA);thread.Start();
         try{_ready.Task.WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();}
@@ -86,7 +94,7 @@ internal sealed class ClipboardHistoryService : IDisposable
             _lastCaptured=snapshot.Sequence;_attempt=0;
             if(snapshot.IsOwnRestore)return;
             lock(_stateLock)_pending++;
-            if(!_queue.Writer.TryWrite(snapshot)){lock(_stateLock)_pending--;return;}
+            if(!_queue.Writer.TryWrite(new(Snapshot:snapshot))){lock(_stateLock)_pending--;return;}
             Log("capture.snapshot",snapshot,new(){["snapshotMs"]=Stopwatch.GetElapsedTime(started).TotalMilliseconds});
         }
         catch(Exception ex)
@@ -108,8 +116,13 @@ internal sealed class ClipboardHistoryService : IDisposable
     {
         try
         {
-            await foreach(var snapshot in _queue.Reader.ReadAllAsync(_abort.Token))
+            await foreach(var work in _queue.Reader.ReadAllAsync(_abort.Token))
             {
+                if(work.UsedId is {} id)
+                {
+                    work.Completion!.TrySetResult(RecordUse(id));continue;
+                }
+                var snapshot=work.Snapshot!;
                 try
                 {
                     Log("capture.queue",snapshot,new(){["waitMs"]=Stopwatch.GetElapsedTime(snapshot.CapturedAt).TotalMilliseconds});
@@ -122,7 +135,15 @@ internal sealed class ClipboardHistoryService : IDisposable
             }
         }
         catch(OperationCanceledException) when(_abort.IsCancellationRequested){}
-        finally{while(_queue.Reader.TryRead(out _)){lock(_stateLock)_pending--;}Notify(StateChanged);}
+        finally
+        {
+            while(_queue.Reader.TryRead(out var work))
+            {
+                if(work.Completion is not null)work.Completion.TrySetResult(new(RecencyWarning));
+                else lock(_stateLock)_pending--;
+            }
+            Notify(StateChanged);
+        }
     }
     private Task<bool> PersistAsync(ClipboardSnapshot snapshot,CancellationToken token)
     {
@@ -132,12 +153,48 @@ internal sealed class ClipboardHistoryService : IDisposable
         var preview=png is not null?$"图片 {image.Width}×{image.Height}":NormalizePreview(snapshot.Text??StripMarkup(snapshot.Html??snapshot.Rtf??""));
         var hash=ComputeHash(snapshot.Text,snapshot.Html,snapshot.Rtf,png);var hashedAt=Stopwatch.GetTimestamp();
         token.ThrowIfCancellationRequested();
-        var added=_db.AddClipboard(new(0,kind,preview,snapshot.Text,snapshot.Html,snapshot.Rtf,png,false,snapshot.CreatedAt,hash),_limit());
+        var added=_db.AddClipboard(new(0,kind,preview,snapshot.Text,snapshot.Html,snapshot.Rtf,png,false,snapshot.CreatedAt,hash),_limit(),out var historyChanged);
+        if(historyChanged&&!added)Notify(Updated);
         Log("capture.persist",snapshot,new(){["width"]=image.Width,["height"]=image.Height,["prepareMs"]=Stopwatch.GetElapsedTime(started,preparedAt).TotalMilliseconds,
             ["hashMs"]=Stopwatch.GetElapsedTime(preparedAt,hashedAt).TotalMilliseconds,["databaseMs"]=Stopwatch.GetElapsedTime(hashedAt).TotalMilliseconds,["added"]=added});
         return Task.FromResult(added);
     }
-    internal async Task RestoreAsync(ClipboardEntry entry)
+    internal async Task<ClipboardRestoreResult> RestoreAsync(ClipboardEntry entry)
+    {
+        await _restore(entry).ConfigureAwait(false);
+        var completion=new TaskCompletionSource<ClipboardRestoreResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            // Queue on the capture STA: older captured images must finish BEFORE this recency update,
+            // even when encoding/SQLite is slow. Later copies will naturally follow it in the queue.
+            await _dispatcher.InvokeAsync(()=>
+            {
+                if(!_queue.Writer.TryWrite(new(UsedId:entry.Id,Completion:completion)))completion.TrySetResult(new(RecencyWarning));
+            });
+            return await completion.Task.ConfigureAwait(false);
+        }
+        catch(TaskCanceledException){return new(RecencyWarning);}
+        catch(InvalidOperationException){return new(RecencyWarning);}
+    }
+
+    private ClipboardRestoreResult RecordUse(long id)
+    {
+        // Once restored, a failed metadata update must never turn a successful paste into a failure.
+        try
+        {
+            var changed=_recordUse(id);
+            if(!changed)throw new InvalidOperationException("所选记录已不存在。");
+            Notify(Updated);return new();
+        }
+        catch(Exception ex)
+        {
+            DiagnosticLog.Write("clipboard","history.recency.failed","内容已恢复，但最近使用顺序保存失败。","Warning",
+                data:new Dictionary<string,object?>{{"errorType",ex.GetType().Name},{"hresult",ex.HResult}});
+            return new(RecencyWarning);
+        }
+    }
+
+    private async Task RestoreNativeAsync(ClipboardEntry entry)
     {
         if(_reader is not NativeClipboardReader native)throw new InvalidOperationException("测试读取器不写系统剪贴板。");
         var values=await Task.Run(()=>native.PrepareRestore(entry));
