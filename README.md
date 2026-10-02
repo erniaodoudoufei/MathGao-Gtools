@@ -8,7 +8,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-`v1.1.9` 已公开；当前本地版本 `v1.1.12` 支持历史剪贴板“用过即前移”，并包含之前的图片保存优化和长截图改造。真实微信长截图验收仍待完成，完成后再发布源码标签。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权。项目不会在授权边界不明确时把该二进制发布给公众；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json) 和 [公开验收摘要](ACCEPTANCE-STATUS.md)。
+当前源码版本为 `v1.1.13`：待办浮窗新增删除/清除已完成后的撤销按钮，同时保留历史剪贴板“用过即前移”、图片保存优化和长截图改造。GitHub Release 提供源码下载。真实浏览器/聊天软件复制及微信长截图验收仍待完成，详情见 [公开验收摘要](ACCEPTANCE-STATUS.md)。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json)。
 
 当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
 
@@ -110,7 +110,7 @@ dotnet test .\tests\Gtools.Tests\Gtools.Tests.csproj -c Release --no-build
 dotnet list .\Gtools.sln package --vulnerable --include-transitive
 ```
 
-本地评估目录为 `artifacts\Gtools-1.1.12`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
+本地评估目录为 `artifacts\Gtools-1.1.13`，入口仍为 `Gtools.exe`。构建产物较大是因为包含离线 OCR 模型和 CPU Runtime；它们不会常驻内存。CI 只执行 Release 构建、测试和漏洞扫描，不生成 Windows ZIP。
 
 诊断启动可使用 `Gtools.exe --test-profile <目录> --diagnostics --show-dashboard`。测试配置不会读写正式 `%LOCALAPPDATA%\Gtools`，也不会修改开机启动设置。请勿公开提交原始诊断日志；日志可能包含本机路径和运行环境信息。
 
