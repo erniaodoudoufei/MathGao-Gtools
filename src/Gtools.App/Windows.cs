@@ -771,6 +771,11 @@ internal sealed class FloatingDockWindow : Window
     private readonly ScrollViewer _todoScroll;
     private readonly TextBox _todoInput=new();
     private readonly TextBlock _todoCount=Ui.Text("",11);
+    private readonly TodoUndoHistory _undo;
+    private Button _undoButton=null!;
+    // 删除/清除/撤销后，在计数位置短暂提示一句，让人知道「可以撤销」。
+    private readonly DispatcherTimer _noticeTimer=new(){Interval=TimeSpan.FromSeconds(5)};
+    private string? _notice;
     private readonly Button _chevron;
     private readonly DockTheme _theme;
     private readonly DesktopLayerHost _desktopLayer;
@@ -782,6 +787,8 @@ internal sealed class FloatingDockWindow : Window
     public FloatingDockWindow(GtoolsSettings settings,SettingsStore store,LocalDatabase db)
     {
         _settings=settings;_store=store;_db=db;_theme=DockTheme.For(settings.MonitorTheme);
+        _undo=new TodoUndoHistory(db);
+        _noticeTimer.Tick+=(_,_)=>{_noticeTimer.Stop();_notice=null;RefreshTodo();};
         Title="Gtools 悬浮条";WindowStyle=WindowStyle.None;ResizeMode=ResizeMode.NoResize;SizeToContent=SizeToContent.Height;
         ShowInTaskbar=false;Topmost=false;ShowActivated=false;AllowsTransparency=true;Background=Brushes.Transparent;
         WindowStartupLocation=WindowStartupLocation.Manual;
@@ -960,8 +967,14 @@ internal sealed class FloatingDockWindow : Window
         Grid.SetColumn(title,0);header.Children.Add(title);
         _todoCount.Foreground=_theme.Muted;_todoCount.Margin=new Thickness(0,0,4,0);_todoCount.VerticalAlignment=VerticalAlignment.Center;
         Grid.SetColumn(_todoCount,1);header.Children.Add(_todoCount);
-        var clear=IconButton("清除已完成","⌫",(_,_)=>{_db.ClearCompletedTodo();RefreshTodo();});
-        Grid.SetColumn(clear,2);header.Children.Add(clear);
+        _undoButton=IconButton("撤销","↶",(_,_)=>UndoTodo());
+        // 刚删完东西的时候要一眼找得到：比旁边的灰色小图标大一号，用主题色。
+        _undoButton.FontSize=14;_undoButton.Width=20;_undoButton.Foreground=_theme.Foreground;_undoButton.FontWeight=FontWeights.Bold;
+        _undoButton.Visibility=Visibility.Collapsed;
+        var clear=IconButton("清除已完成","⌫",(_,_)=>ClearCompletedTodo());
+        var actions=new StackPanel{Orientation=Orientation.Horizontal};
+        actions.Children.Add(_undoButton);actions.Children.Add(clear);
+        Grid.SetColumn(actions,2);header.Children.Add(actions);
         panel.Children.Add(header);
         EnableDrag(header);
 
@@ -993,13 +1006,41 @@ internal sealed class FloatingDockWindow : Window
         _db.AddTodo(text);_todoInput.Clear();RefreshTodo();
     }
 
+    private void DeleteTodo(TodoItem item)
+    {
+        if(_undo.Delete(item.Id) is not null)ShowTodoNotice("已删除，可撤销");
+        RefreshTodo();
+    }
+
+    private void ClearCompletedTodo()
+    {
+        var cleared=_undo.ClearCompleted();
+        if(cleared>0)ShowTodoNotice($"已清除 {cleared} 项，可撤销");
+        RefreshTodo();
+    }
+
+    private void UndoTodo()
+    {
+        var step=_undo.Undo();
+        if(step is null)return;
+        ShowTodoNotice(step.Items.Count==1?"已恢复":$"已恢复 {step.Items.Count} 项");
+        RefreshTodo();
+    }
+
+    private void ShowTodoNotice(string text)
+    {
+        _notice=text;_noticeTimer.Stop();_noticeTimer.Start();
+    }
+
     private void RefreshTodo()
     {
         var items=_db.ListTodo();
         _todoRows.Children.Clear();
         foreach(var item in items)_todoRows.Children.Add(TodoRow(item,items));
         var pending=items.Count(x=>!x.IsDone);
-        _todoCount.Text=items.Count==0?"":pending>0?$"{pending} 项未完成":"全部完成";
+        _todoCount.Text=_notice??(items.Count==0?"":pending>0?$"{pending} 项未完成":"全部完成");
+        _undoButton.Visibility=_undo.CanUndo?Visibility.Visible:Visibility.Collapsed;
+        _undoButton.ToolTip=_undo.CanUndo?$"撤销：{_undo.NextDescription}":null;
         // 超过设定行数就滚动，避免浮窗长到顶天。
         _todoScroll.MaxHeight=Math.Max(1,Math.Clamp(_settings.TodoVisibleRows,1,20))*24;
         UpdateChevron();
@@ -1032,7 +1073,7 @@ internal sealed class FloatingDockWindow : Window
         var buttons=new StackPanel{Orientation=Orientation.Horizontal};
         buttons.Children.Add(IconButton("上移","▲",(_,_)=>Move(all,index,-1),index>0));
         buttons.Children.Add(IconButton("下移","▼",(_,_)=>Move(all,index,1),index<all.Count-1));
-        buttons.Children.Add(IconButton("删除","✕",(_,_)=>{_db.DeleteTodo(item.Id);RefreshTodo();}));
+        buttons.Children.Add(IconButton("删除","✕",(_,_)=>DeleteTodo(item)));
         Grid.SetColumn(buttons,2);row.Children.Add(buttons);
         return row;
     }

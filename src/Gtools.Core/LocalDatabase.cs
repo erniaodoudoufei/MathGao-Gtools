@@ -319,6 +319,32 @@ public sealed class LocalDatabase
 
     public void ClearCompletedTodo() => Execute("DELETE FROM todo_items WHERE is_done<>0");
 
+    /// <summary>
+    /// 把删掉的条目原样放回去：原 id、原排序号、原勾选状态和时间都保留，所以会回到原来的位置。
+    /// AUTOINCREMENT 不会复用 id，原 id 必然空着；万一被占（库被外部改过），就分配新 id，内容照样完整恢复。
+    /// </summary>
+    public void RestoreTodo(IReadOnlyList<TodoItem> items)
+    {
+        if (items.Count == 0) return;
+        using var c = Open(); using var tx = c.BeginTransaction();
+        foreach (var item in items)
+        {
+            using var cmd = c.CreateCommand(); cmd.Transaction = tx;
+            cmd.CommandText = "INSERT OR IGNORE INTO todo_items(id,text_value,is_done,sort_order,created_at,completed_at) VALUES($id,$t,$v,$o,$c,$d)";
+            cmd.Parameters.AddWithValue("$id", item.Id);
+            cmd.Parameters.AddWithValue("$t", item.Text);
+            cmd.Parameters.AddWithValue("$v", item.IsDone ? 1 : 0);
+            cmd.Parameters.AddWithValue("$o", item.SortOrder);
+            cmd.Parameters.AddWithValue("$c", item.CreatedAt.ToString("O"));
+            cmd.Parameters.AddWithValue("$d", item.CompletedAt is { } done ? done.ToString("O") : DBNull.Value);
+            if (cmd.ExecuteNonQuery() > 0) continue;
+            cmd.Parameters.RemoveAt("$id");
+            cmd.CommandText = "INSERT INTO todo_items(text_value,is_done,sort_order,created_at,completed_at) VALUES($t,$v,$o,$c,$d)";
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
     /// <summary>整体重写 sort_order，而不是相邻交换：历史脏数据（重复或空缺的序号）不会让顺序错乱。</summary>
     public void ReorderTodo(IReadOnlyList<long> orderedIds)
     {

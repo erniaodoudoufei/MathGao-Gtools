@@ -195,7 +195,7 @@ foreach ($document in @('README.md','CHANGELOG.md','ACCEPTANCE-STATUS.md',"RELEA
     Copy-Item -LiteralPath $sourceDocument -Destination $publishRoot -Force
 }
 
-foreach ($reportName in @('LONGSHOT-ACCEPTANCE-v1.1.10.md','CLIPBOARD-ACCEPTANCE-v1.1.11.md',"CLIPBOARD-ACCEPTANCE-v$version.md") | Select-Object -Unique) {
+foreach ($reportName in @('LONGSHOT-ACCEPTANCE-v1.1.10.md','CLIPBOARD-ACCEPTANCE-v1.1.11.md','CLIPBOARD-ACCEPTANCE-v1.1.12.md','TODO-UNDO-ACCEPTANCE-v1.1.13.md',"CLIPBOARD-ACCEPTANCE-v$version.md") | Select-Object -Unique) {
     $featureReport = Join-Path $workspace $reportName
     if (Test-Path -LiteralPath $featureReport -PathType Leaf) {
         Copy-Item -LiteralPath $featureReport -Destination $publishRoot -Force
