@@ -51,7 +51,7 @@ internal sealed class DashboardWindow : Window
         Add("聊天长截图",s.LongShotEnabled,$"Alt+Shift+S；手动{(s.LongShotScrollUp?"向上":"向下")}滚动，逐帧确认接缝");
         Add("历史剪贴板",s.ClipboardEnabled,"Ctrl+~；SQLite FTS5，文字/富文本/图片");
         Add("性能悬浮条",s.MonitorEnabled,"上/下行、CPU、内存，每秒刷新");
-        Add("待办清单",s.TodoEnabled,s.TodoExpanded?"拼在流量条上方，可勾选、删除、调顺序":"已折叠，点流量条右侧箭头或托盘菜单展开");
+        Add("待办清单",s.TodoEnabled,s.TodoExpanded?"拼在流量条上方；悬停一行可编辑、删除，⋯ 展开样式与排序":"已折叠，点流量条右侧箭头或托盘菜单展开");
         _status.Children.Add(_health);
     }
     public void SetHealth((string Name,ModuleStatus Status)[] statuses)=>_health.Text="健康检查："+string.Join(" · ",statuses.Select(x=>$"{x.Name} {HealthMark(x.Status.Health)}"));
@@ -780,6 +780,11 @@ internal sealed class FloatingDockWindow : Window
     private readonly TodoUndoHistory _undo;
     private Button _undoButton=null!;
     private readonly Popup _todoColorPopup=new(){StaysOpen=false,AllowsTransparency=true,Placement=PlacementMode.Bottom};
+    // 行操作默认收起：悬停露出编辑/更多/删除，「更多」再展开样式与排序。两种状态都按事项 Id 记，
+    // 上移、置顶、勾选导致整表重建后，展开的工具栏和编辑中的输入框仍跟着同一条事项。
+    private long? _todoToolsId,_todoEditingId;
+    private string? _todoEditDraft;
+    private TextBox? _todoEditor;
     // 删除/清除/撤销后，在计数位置短暂提示一句，让人知道「可以撤销」。
     private readonly DispatcherTimer _noticeTimer=new(){Interval=TimeSpan.FromSeconds(5)};
     private string? _notice;
@@ -847,7 +852,7 @@ internal sealed class FloatingDockWindow : Window
             _up.Text=SystemSnapshot.Rate(s.UpBytes);_down.Text=SystemSnapshot.Rate(s.DownBytes);
             _cpu.Text=$"{s.Cpu:0} %";_ram.Text=$"{s.Memory:0} %";
         };
-        Closed+=async(_,_)=>{DisposeTodoCalendar();_todoColorPopup.IsOpen=false;_desktopLayer.Dispose();await _store.SaveAsync();};
+        Closed+=async(_,_)=>{SavePendingTodoEdit();DisposeTodoCalendar();_todoColorPopup.IsOpen=false;_desktopLayer.Dispose();await _store.SaveAsync();};
     }
 
     // ---------- 模块开关 ----------
@@ -939,6 +944,7 @@ internal sealed class FloatingDockWindow : Window
     private void ToggleTodo()
     {
         _settings.TodoExpanded=!_settings.TodoExpanded;
+        if(!_settings.TodoExpanded){SavePendingTodoEdit();_todoToolsId=null;}
         if(_settings.TodoExpanded)RefreshTodo();
         Sync();
         _=_store.SaveAsync();
@@ -1109,9 +1115,16 @@ internal sealed class FloatingDockWindow : Window
     private void RefreshTodo()
     {
         _todoColorPopup.IsOpen=false;
+        // 编辑中被别的操作触发重建（勾选、上移等）时，把已输入的草稿带到新行里，焦点也跟过去。
+        var editorFocused=_todoEditor?.IsKeyboardFocusWithin==true;
+        if(_todoEditingId is not null&&_todoEditor is not null)_todoEditDraft=_todoEditor.Text;
+        _todoEditor=null;
         var items=_db.ListTodo();
+        if(_todoToolsId is { } tools&&items.All(x=>x.Id!=tools))_todoToolsId=null;
+        if(_todoEditingId is { } editing&&items.All(x=>x.Id!=editing)){_todoEditingId=null;_todoEditDraft=null;}
         _todoRows.Children.Clear();
         foreach(var item in items)_todoRows.Children.Add(TodoRow(item,items));
+        if(editorFocused)FocusTodoEditor();
         var pending=items.Count(x=>!x.IsDone);
         _todoCountText=items.Count==0?"":pending>0?$"{pending}项":"全部完成";
         _todoCountTip=items.Count==0?"暂无待办":pending>0?$"{pending} 项未完成":"全部完成";
@@ -1125,35 +1138,72 @@ internal sealed class FloatingDockWindow : Window
 
     private UIElement TodoRow(TodoItem item,IReadOnlyList<TodoItem> all)
     {
-        var row=new Grid{Margin=new Thickness(0,1,0,1)};
+        var editing=_todoEditingId==item.Id;
+        var toolsOpen=!editing&&_todoToolsId==item.Id;
+        // 透明背景让整行（包括文字右侧的空白）都能接到悬停。
+        var row=new Grid{Margin=new Thickness(0,1,0,1),Tag=item.Id,Background=toolsOpen?_theme.InputBackground:Brushes.Transparent};
         row.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
         row.ColumnDefinitions.Add(new());
         row.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        // 首行按按钮高度留位：悬停时按钮出现不会把这一行顶高，列表也就不会跟着抖；总高度与改版前一致。
+        row.RowDefinitions.Add(new(){Height=GridLength.Auto,MinHeight=17});
+        row.RowDefinitions.Add(new(){Height=GridLength.Auto});
 
-        var check=new CheckBox{IsChecked=item.IsDone,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(1,0,4,0)};
+        // 勾选框和行内按钮都不抢键盘焦点：编辑某条时去点别的行，编辑框不会先失焦把整表重建掉，导致这一下点空。
+        var check=new CheckBox{IsChecked=item.IsDone,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(1,0,4,0),Focusable=false};
         // 用 Checked/Unchecked 而不是 Click：勾选状态还可能被鼠标以外的途径改变（键盘、辅助功能/UI 自动化），
         // 只挂 Click 的话界面打了勾但数据库没写，重启就丢。
         void Toggled(object? _,RoutedEventArgs __){_db.SetTodoDone(item.Id,check.IsChecked==true);RefreshTodo();}
         check.Checked+=Toggled;check.Unchecked+=Toggled;
         Grid.SetColumn(check,0);row.Children.Add(check);
 
-        var text=new TextBlock
+        UIElement content;
+        if(editing)content=TodoEditor(item);
+        else
         {
-            Text=item.Text,FontSize=11.5,VerticalAlignment=VerticalAlignment.Center,
-            TextTrimming=TextTrimming.CharacterEllipsis,ToolTip=item.Text,
-            Foreground=TodoColorBrush(item.TextColor),Opacity=item.IsDone?.65:1,
-            FontWeight=item.IsBold?FontWeights.Bold:FontWeights.Normal,
-            FontStyle=item.IsItalic?FontStyles.Italic:FontStyles.Normal,
-            TextDecorations=item.IsDone?TextDecorations.Strikethrough:null
-        };
-        Grid.SetColumn(text,1);row.Children.Add(text);
+            var text=new TextBlock
+            {
+                Text=item.Text,FontSize=11.5,VerticalAlignment=VerticalAlignment.Center,
+                TextTrimming=TextTrimming.CharacterEllipsis,ToolTip=item.Text,
+                Foreground=TodoColorBrush(item.TextColor),Opacity=item.IsDone?.65:1,
+                FontWeight=item.IsBold?FontWeights.Bold:FontWeights.Normal,
+                FontStyle=item.IsItalic?FontStyles.Italic:FontStyles.Normal,
+                TextDecorations=item.IsDone?TextDecorations.Strikethrough:null
+            };
+            text.MouseLeftButtonDown+=(_,e)=>{if(e.ClickCount==2){BeginTodoEdit(item.Id);e.Handled=true;}};
+            content=text;
+        }
+        Grid.SetColumn(content,1);row.Children.Add(content);
 
+        // 常用的三个：平时隐藏，悬停才出现；工具栏展开时常驻，方便再点「更多」收起。
+        var actions=new StackPanel{Orientation=Orientation.Horizontal,Margin=new Thickness(3,0,0,0),
+            Visibility=toolsOpen?Visibility.Visible:Visibility.Collapsed};
+        var edit=IconButton("编辑","✎",(_,_)=>BeginTodoEdit(item.Id));
+        edit.FontFamily=new FontFamily("Segoe UI Symbol");edit.FontSize=11;
+        actions.Children.Add(edit);
+        actions.Children.Add(TodoStyleButton("更多","⋯",toolsOpen,()=>ToggleTodoTools(item.Id)));
+        actions.Children.Add(IconButton("删除","✕",(_,_)=>DeleteTodo(item)));
+        foreach(var button in actions.Children.OfType<Button>())
+            System.Windows.Automation.AutomationProperties.SetName(button,(string)button.ToolTip);
+        Grid.SetColumn(actions,2);row.Children.Add(actions);
+        if(!editing)
+        {
+            row.MouseEnter+=(_,_)=>{row.Background=_theme.InputBackground;actions.Visibility=Visibility.Visible;};
+            row.MouseLeave+=(_,_)=>
+            {
+                if(_todoToolsId==item.Id)return;
+                row.Background=Brushes.Transparent;actions.Visibility=Visibility.Collapsed;
+            };
+        }
+
+        // 低频的样式与排序收进「更多」，展开成本行下方一条工具栏；六个按钮与原来的行为完全一致。
         var index=all.ToList().IndexOf(item);
-        var buttons=new StackPanel{Orientation=Orientation.Horizontal};
+        var tools=new StackPanel{Orientation=Orientation.Horizontal,Margin=new Thickness(0,1,0,1),
+            Visibility=toolsOpen?Visibility.Visible:Visibility.Collapsed};
         var bold=TodoStyleButton("加粗","B",item.IsBold,()=>ChangeTodoStyle(item.Id,x=>x with{IsBold=!x.IsBold}));
-        bold.FontWeight=FontWeights.Bold;buttons.Children.Add(bold);
+        bold.FontWeight=FontWeights.Bold;tools.Children.Add(bold);
         var italic=TodoStyleButton("倾斜","I",item.IsItalic,()=>ChangeTodoStyle(item.Id,x=>x with{IsItalic=!x.IsItalic}));
-        italic.FontStyle=FontStyles.Italic;buttons.Children.Add(italic);
+        italic.FontStyle=FontStyles.Italic;tools.Children.Add(italic);
         var color=IconButton("文字颜色","●",(_,_)=>{});color.FontSize=12;color.Foreground=TodoColorBrush(item.TextColor);
         System.Windows.Automation.AutomationProperties.SetName(color,"文字颜色");
         color.Click+=(_,_)=>
@@ -1162,16 +1212,110 @@ internal sealed class FloatingDockWindow : Window
             _todoColorPopup.IsOpen=false;_todoColorPopup.PlacementTarget=color;
             _todoColorPopup.Child=BuildTodoColorPalette(item.Id);_todoColorPopup.IsOpen=true;
         };
-        buttons.Children.Add(color);
+        tools.Children.Add(color);
+        tools.Children.Add(new Border{Width=1,Height=11,Margin=new Thickness(5,0,4,0),Background=_theme.Border,VerticalAlignment=VerticalAlignment.Center});
         var top=IconButton("一键置顶","⤒",(_,_)=>MoveTodoToTop(item.Id),index>0);
         top.FontFamily=new FontFamily("Segoe UI Symbol");top.FontSize=12;
         System.Windows.Automation.AutomationProperties.SetName(top,"一键置顶");
-        buttons.Children.Add(top);
-        buttons.Children.Add(IconButton("上移","▲",(_,_)=>Move(all,index,-1),index>0));
-        buttons.Children.Add(IconButton("下移","▼",(_,_)=>Move(all,index,1),index<all.Count-1));
-        buttons.Children.Add(IconButton("删除","✕",(_,_)=>DeleteTodo(item)));
-        Grid.SetColumn(buttons,2);row.Children.Add(buttons);
+        tools.Children.Add(top);
+        tools.Children.Add(IconButton("上移","▲",(_,_)=>Move(all,index,-1),index>0));
+        tools.Children.Add(IconButton("下移","▼",(_,_)=>Move(all,index,1),index<all.Count-1));
+        Grid.SetRow(tools,1);Grid.SetColumn(tools,1);Grid.SetColumnSpan(tools,2);row.Children.Add(tools);
         return row;
+    }
+
+    private TextBox TodoEditor(TodoItem item)
+    {
+        var box=new TextBox
+        {
+            Text=_todoEditDraft??item.Text,FontSize=11.5,Padding=new Thickness(2,0,2,0),
+            VerticalContentAlignment=VerticalAlignment.Center,ToolTip="Enter 保存，Esc 取消",
+            Background=_theme.InputBackground,Foreground=_theme.Foreground,
+            BorderBrush=_theme.Foreground,BorderThickness=new Thickness(1)
+        };
+        System.Windows.Automation.AutomationProperties.SetName(box,"编辑待办");
+        box.KeyDown+=(_,e)=>
+        {
+            if(e.Key==Key.Enter){CommitTodoEdit();e.Handled=true;}
+            else if(e.Key==Key.Escape){CancelTodoEdit();e.Handled=true;}
+        };
+        // 点到浮窗外面或别的输入框就保存。整表重建时旧编辑框也会失焦，但它已不是当前编辑框，按身份过滤掉。
+        box.LostKeyboardFocus+=(_,_)=>{if(ReferenceEquals(box,_todoEditor))CommitTodoEdit();};
+        _todoEditor=box;
+        return box;
+    }
+
+    private void BeginTodoEdit(long id)
+    {
+        if(_todoEditingId==id){FocusTodoEditor();return;}
+        SavePendingTodoEdit();
+        _todoEditingId=id;_todoEditDraft=null;_todoToolsId=null;
+        RefreshTodoKeepingScroll();
+        FocusTodoEditor(selectAll:true);
+    }
+
+    private void CommitTodoEdit()
+    {
+        if(SavePendingTodoEdit())RefreshTodoKeepingScroll();
+    }
+
+    private void CancelTodoEdit()
+    {
+        if(_todoEditingId is null)return;
+        _todoEditingId=null;_todoEditDraft=null;_todoEditor=null;
+        RefreshTodoKeepingScroll();
+    }
+
+    /// <summary>把进行中的编辑写库并结束编辑状态（不刷新界面）；没有进行中的编辑时返回 false。</summary>
+    private bool SavePendingTodoEdit()
+    {
+        if(_todoEditingId is not { } id)return false;
+        var text=(_todoEditor?.Text??_todoEditDraft??"").Trim();
+        _todoEditingId=null;_todoEditDraft=null;_todoEditor=null;
+        // 清空等同取消：编辑框不是删除入口，删除要走 ✕ 才能撤销。
+        if(text.Length==0)return true;
+        try
+        {
+            // 按点击时的最新数据判断，事项在编辑期间被删掉也不会写回或复活。
+            var current=_db.ListTodo().FirstOrDefault(x=>x.Id==id);
+            if(current is not null&&current.Text!=text)_db.UpdateTodoText(id,text);
+        }
+        catch(Exception ex)
+        {
+            DiagnosticLog.Write("todo","edit.failed",ex.GetType().Name,"Error");
+            ShowTodoNotice("修改保存失败，请重试");
+        }
+        return true;
+    }
+
+    private void FocusTodoEditor(bool selectAll=false)
+    {
+        var box=_todoEditor;
+        if(box is null)return;
+        void Apply()
+        {
+            if(!ReferenceEquals(box,_todoEditor))return;
+            // ShowActivated=false 的浮窗要先显式激活才能接键盘输入，和新增输入框同一个道理。
+            Activate();box.Focus();
+            if(selectAll)box.SelectAll();else box.CaretIndex=box.Text.Length;
+        }
+        Apply();
+        // 新行刚插进可视树、还没布局时拿不到焦点，等布局完成再试一次。
+        if(!box.IsKeyboardFocusWithin)Dispatcher.BeginInvoke(Apply,DispatcherPriority.Loaded);
+    }
+
+    private void ToggleTodoTools(long id)
+    {
+        _todoToolsId=_todoToolsId==id?null:id;
+        RefreshTodoKeepingScroll();
+        // 末行展开后工具栏可能落到滚动区外，布局完成后把它带进视野。
+        if(_todoToolsId==id)Dispatcher.BeginInvoke(()=>
+            _todoRows.Children.OfType<FrameworkElement>().FirstOrDefault(x=>Equals(x.Tag,id))?.BringIntoView(),DispatcherPriority.Loaded);
+    }
+
+    private void RefreshTodoKeepingScroll()
+    {
+        var offset=_todoScroll.VerticalOffset;RefreshTodo();_todoScroll.ScrollToVerticalOffset(offset);
     }
 
     private Button TodoStyleButton(string label,string glyph,bool active,Action apply)
@@ -1269,7 +1413,7 @@ internal sealed class FloatingDockWindow : Window
         {
             Content=glyph,ToolTip=tip,FontSize=10,Width=17,Height=17,Padding=new Thickness(0),
             Margin=new Thickness(1,0,0,0),Background=Brushes.Transparent,BorderThickness=new Thickness(0),
-            Foreground=_theme.Muted,Cursor=Cursors.Hand,VerticalAlignment=VerticalAlignment.Center
+            Foreground=_theme.Muted,Cursor=Cursors.Hand,VerticalAlignment=VerticalAlignment.Center,Focusable=false
         };
         // 不用 IsEnabled=false：默认模板的禁用态会画一个灰色方块，在浮窗里很脏。
         if(!enabled){button.Opacity=.25;button.IsHitTestVisible=false;button.Cursor=Cursors.Arrow;}

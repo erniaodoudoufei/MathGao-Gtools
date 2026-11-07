@@ -17,7 +17,7 @@ public sealed class TodoTopTests
         var before=panel.Db.ListTodo();var target=before[index];
         var oldWidth=panel.Window.Width;var oldLeft=panel.Settings.MonitorLeft;var oldTop=panel.Settings.MonitorTop;
         panel.Scroll.ScrollToBottom();panel.Layout();Assert.True(panel.Scroll.VerticalOffset>0);
-        var buttons=panel.Buttons(index);Assert.Equal(new[]{"加粗","倾斜","文字颜色","一键置顶","上移","下移","删除"},buttons.Select(b=>b.ToolTip));
+        var buttons=panel.Buttons(index);Assert.Equal(new[]{"编辑","更多","删除","加粗","倾斜","文字颜色","一键置顶","上移","下移"},buttons.Select(b=>b.ToolTip));
         panel.Button(index,"一键置顶").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));panel.Layout();
         var expected=new[]{target.Id}.Concat(before.Where(x=>x.Id!=target.Id).Select(x=>x.Id));
         Assert.Equal(expected,panel.Db.ListTodo().Select(x=>x.Id));Assert.Equal(0,panel.Scroll.VerticalOffset);
@@ -54,16 +54,9 @@ public sealed class TodoTopTests
     [Theory][InlineData(1d)][InlineData(1.25d)][InlineData(1.5d)][InlineData(2d)]
     public Task ButtonLayoutDoesNotOverlapAtSupportedDpiAndRendersForReview(double scale)=>OnSta(panel=>
     {
-        VisualTreeHelper.SetRootDpi(panel.Root,new DpiScale(scale,scale));panel.Layout();
-        var buttons=panel.Buttons(1);var row=(Grid)panel.Rows.Children[1];
-        var text=row.Children.OfType<TextBlock>().Single();var end=text.TranslatePoint(new Point(text.ActualWidth,0),row).X;
-        var first=buttons[0].TranslatePoint(new Point(),row).X;Assert.True(end<=first+.5);
-        for(var i=0;i<buttons.Length;i++)
-        {
-            var button=buttons[i];Assert.Equal(17,button.ActualWidth);Assert.Equal(17,button.ActualHeight);
-            if(i>0)Assert.True(buttons[i-1].TranslatePoint(new Point(17,0),row).X<=button.TranslatePoint(new Point(),row).X);
-            Assert.True(button.TranslatePoint(new Point(17,0),panel.Root).X<=262);
-        }
+        VisualTreeHelper.SetRootDpi(panel.Root,new DpiScale(scale,scale));
+        panel.Button(1,"更多").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));panel.Layout();
+        Assert.Equal(Visibility.Visible,panel.Tools(1).Visibility);panel.AssertRowLayout(1);
         var top=panel.Button(1,"一键置顶");Assert.Equal("⤒",top.Content);Assert.Equal("一键置顶",System.Windows.Automation.AutomationProperties.GetName(top));
         var destination=Environment.GetEnvironmentVariable("GTOOLS_TODO_PREVIEW_ROOT");
         if(!string.IsNullOrWhiteSpace(destination))
@@ -113,8 +106,54 @@ public sealed class TodoTopTests
         }
         public T Field<T>(string name)=>(T)typeof(FloatingDockWindow).GetField(name,BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(Window)!;
         public void Invoke(string name,params object[] args)=>typeof(FloatingDockWindow).GetMethod(name,BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(Window,args);
-        public Button[] Buttons(int row)=>((Grid)Rows.Children[row]).Children.OfType<StackPanel>().Single().Children.OfType<Button>().ToArray();
+        // A row holds two button groups: the hover strip (编辑/更多/删除) and the collapsible tool line below it.
+        public Grid Row(int row)=>(Grid)Rows.Children[row];
+        public StackPanel Actions(int row)=>Row(row).Children.OfType<StackPanel>().First();
+        public StackPanel Tools(int row)=>Row(row).Children.OfType<StackPanel>().Last();
+        public Button[] Buttons(int row)=>Row(row).Children.OfType<StackPanel>().SelectMany(p=>p.Children.OfType<Button>()).ToArray();
         public Button Button(int row,string label)=>Buttons(row).Single(b=>Equals(b.ToolTip,label));
+        public TextBox? Editor(int row)=>Row(row).Children.OfType<TextBox>().SingleOrDefault();
+        public void Hover(int row,bool enter=true)=>Row(row).RaiseEvent(new System.Windows.Input.MouseEventArgs(System.Windows.Input.Mouse.PrimaryDevice,0)
+            {RoutedEvent=enter?System.Windows.Input.Mouse.MouseEnterEvent:System.Windows.Input.Mouse.MouseLeaveEvent});
+        public static void Press(UIElement target,System.Windows.Input.Key key)=>target.RaiseEvent(
+            new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,new FakeSource(),0,key){RoutedEvent=System.Windows.Input.Keyboard.KeyDownEvent});
+        public static void LoseFocus(UIElement target)=>target.RaiseEvent(
+            new System.Windows.Input.KeyboardFocusChangedEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,0,(IInputElement)target,null)
+            {RoutedEvent=System.Windows.Input.Keyboard.LostKeyboardFocusEvent});
+        public void ClickText(int row,int clickCount)
+        {
+            var args=new System.Windows.Input.MouseButtonEventArgs(System.Windows.Input.Mouse.PrimaryDevice,0,System.Windows.Input.MouseButton.Left)
+                {RoutedEvent=UIElement.MouseLeftButtonDownEvent};
+            typeof(System.Windows.Input.MouseButtonEventArgs).GetProperty("ClickCount")!.SetValue(args,clickCount);
+            Row(row).Children.OfType<TextBlock>().Single().RaiseEvent(args);
+        }
+        // Visible groups keep 17px buttons in order inside the 262px dock; text never runs under the hover strip,
+        // and the tool line sits below the text line instead of squeezing it.
+        public void AssertRowLayout(int index)
+        {
+            var row=Row(index);var content=(FrameworkElement)row.Children[1];var actions=Actions(index);var tools=Tools(index);
+            var contentEnd=content.TranslatePoint(new Point(content.ActualWidth,0),row).X;
+            if(actions.Visibility==Visibility.Visible)Assert.True(contentEnd<=actions.TranslatePoint(new Point(),row).X+.5);
+            else Assert.True(contentEnd>=row.ActualWidth-.5);
+            if(tools.Visibility==Visibility.Visible)
+                Assert.True(tools.TranslatePoint(new Point(),row).Y>=content.TranslatePoint(new Point(0,content.ActualHeight),row).Y-.5);
+            foreach(var group in new[]{actions,tools}.Where(x=>x.Visibility==Visibility.Visible))
+            {
+                var buttons=group.Children.OfType<Button>().ToArray();
+                for(var i=0;i<buttons.Length;i++)
+                {
+                    Assert.Equal(17,buttons[i].ActualWidth);Assert.Equal(17,buttons[i].ActualHeight);
+                    if(i>0)Assert.True(buttons[i-1].TranslatePoint(new Point(17,0),row).X<=buttons[i].TranslatePoint(new Point(),row).X);
+                    Assert.True(buttons[i].TranslatePoint(new Point(17,0),Root).X<=262);
+                }
+            }
+        }
+        private sealed class FakeSource:PresentationSource
+        {
+            protected override CompositionTarget GetCompositionTargetCore()=>null!;
+            public override Visual RootVisual{get;set;}=null!;
+            public override bool IsDisposed=>false;
+        }
         public void Refresh()=>typeof(FloatingDockWindow).GetMethod("RefreshTodo",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(Window,null);
         public Border Palette(long id)=>(Border)typeof(FloatingDockWindow).GetMethod("BuildTodoColorPalette",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(Window,new object[]{id})!;
         public string FirstText()=>((Grid)Rows.Children[0]).Children.OfType<TextBlock>().Single().Text;

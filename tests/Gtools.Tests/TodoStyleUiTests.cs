@@ -78,7 +78,7 @@ public sealed class TodoStyleUiTests
     [Theory]
     [InlineData(1d,MonitorTheme.Light)][InlineData(1.25d,MonitorTheme.Light)][InlineData(1.5d,MonitorTheme.Light)][InlineData(2d,MonitorTheme.Light)]
     [InlineData(1d,MonitorTheme.Dark)][InlineData(1.25d,MonitorTheme.Dark)][InlineData(1.5d,MonitorTheme.Dark)][InlineData(2d,MonitorTheme.Dark)]
-    public Task AllSevenButtonsAndPaletteHaveReadableNonOverlappingDpiLayout(double scale,MonitorTheme theme)=>TodoTopTests.OnSta(panel=>
+    public Task StyledRowsToolLineAndPaletteHaveReadableNonOverlappingDpiLayout(double scale,MonitorTheme theme)=>TodoTopTests.OnSta(panel=>
     {
         var colors=Enum.GetValues<TodoTextColor>();
         var items=panel.Db.ListTodo();
@@ -86,16 +86,12 @@ public sealed class TodoStyleUiTests
         panel.Settings.TodoVisibleRows=12;panel.Refresh();VisualTreeHelper.SetRootDpi(panel.Root,new DpiScale(scale,scale));panel.Layout();
         for(var rowIndex=0;rowIndex<items.Count;rowIndex++)
         {
-            var row=(Grid)panel.Rows.Children[rowIndex];var buttons=panel.Buttons(rowIndex);var text=Text(panel,rowIndex);
-            Assert.Equal(7,buttons.Length);Assert.True(text.ActualWidth>=70);
-            Assert.Equal(17,buttons[0].ActualHeight);
-            Assert.True(text.TranslatePoint(new Point(text.ActualWidth,0),row).X<=buttons[0].TranslatePoint(new Point(),row).X);
-            for(var i=0;i<buttons.Length;i++)
-            {
-                Assert.Equal(17,buttons[i].ActualWidth);Assert.Equal(17,buttons[i].ActualHeight);
-                if(i>0)Assert.True(buttons[i-1].TranslatePoint(new Point(17,0),row).X<=buttons[i].TranslatePoint(new Point(),row).X);
-                Assert.True(buttons[i].TranslatePoint(new Point(17,0),panel.Root).X<=262);
-            }
+            // Collapsed by default: the styled text gets the whole row (previously ~100px beside seven buttons).
+            Assert.Equal(9,panel.Buttons(rowIndex).Length);Assert.True(Text(panel,rowIndex).ActualWidth>=180);
+            panel.AssertRowLayout(rowIndex);
+            Click(panel.Button(rowIndex,"更多"));panel.Layout();
+            Assert.Equal(Visibility.Visible,panel.Tools(rowIndex).Visibility);Assert.True(Text(panel,rowIndex).ActualWidth>=140);
+            panel.AssertRowLayout(rowIndex);
         }
         var palette=panel.Palette(items[0].Id);VisualTreeHelper.SetRootDpi(palette,new DpiScale(scale,scale));
         palette.Measure(new Size(double.PositiveInfinity,double.PositiveInfinity));palette.Arrange(new Rect(palette.DesiredSize));palette.UpdateLayout();

@@ -8,7 +8,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-最新公开源码版本为 `v1.1.13`；当前本地版本 `v1.1.16` 在待办标题栏显示简短农历与英文星期，同时保留加粗、倾斜、颜色、一键置顶、删除/清除撤销、历史剪贴板“用过即前移”、图片保存优化和长截图改造。GitHub Release 提供已公开版本的源码下载。真实浏览器/聊天软件复制及微信长截图验收仍待完成，详情见 [验收摘要](ACCEPTANCE-STATUS.md)。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json)。
+最新公开源码版本为 `v1.1.13`；当前本地版本 `v1.1.17` 支持原地编辑待办、行内按钮悬停才显示，同时保留农历与英文星期、加粗、倾斜、颜色、一键置顶、删除/清除撤销、历史剪贴板“用过即前移”、图片保存优化和长截图改造。GitHub Release 提供已公开版本的源码下载。真实浏览器/聊天软件复制及微信长截图验收仍待完成，详情见 [验收摘要](ACCEPTANCE-STATUS.md)。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json)。
 
 当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
 
@@ -21,7 +21,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 - 英语生词本：可选的有道词典和 dictionaryapi.dev 在线查词、标签筛选、CSV 导出及抽卡复习。
 - `Alt+Shift+S`：手动滚动微信聊天，逐帧检查并确认接缝，由独立 Worker 生成长图。
 - `Ctrl+~`：本地 SQLite 剪贴板历史，支持搜索、收藏、删除、暂停和恢复后粘贴。
-- 性能悬浮条与待办：显示网络、CPU、内存，待办保存在本机 SQLite；两者可分别关闭。每条待办的 ⤒ 按钮可一键移到第一条，并滚动到顶部；顺序重启后保留，之后仍可上下调整。删除单条或清除已完成之后，标题栏右上角会出现撤销按钮 ↶，可以按相反顺序逐步撤回最近 20 步，恢复后的条目保持原来的位置和勾选状态；撤销历史只在本次运行期间保留。
+- 性能悬浮条与待办：显示网络、CPU、内存，待办保存在本机 SQLite；两者可分别关闭。待办每行平时只显示勾选框和文字，鼠标移上去才出现 ✎ 编辑、⋯ 更多、✕ 删除；点 ✎ 或双击文字原地改写（Enter 保存、Esc 取消），⋯ 在本行下方展开加粗、倾斜、颜色、置顶和上下移动。⤒ 按钮可一键移到第一条，并滚动到顶部；顺序重启后保留，之后仍可上下调整。删除单条或清除已完成之后，标题栏右上角会出现撤销按钮 ↶，可以按相反顺序逐步撤回最近 20 步，恢复后的条目保持原来的位置和勾选状态；撤销历史只在本次运行期间保留。
 
 默认启用 OCR、翻译、生词本、长截图、剪贴板和待办；性能悬浮条可在设置中开启。MathGao-Gtools 不修改或卸载 Shot、STranslate、Ditto、AltSnap、TrafficMonitor 等其他软件。
 
