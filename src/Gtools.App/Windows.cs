@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -771,8 +772,14 @@ internal sealed class FloatingDockWindow : Window
     private readonly ScrollViewer _todoScroll;
     private readonly TextBox _todoInput=new();
     private readonly TextBlock _todoCount=Ui.Text("",11);
+    private readonly TextBlock _todoCalendar=Ui.Text("",11);
+    private readonly DispatcherTimer _calendarTimer=new(){Interval=TimeSpan.FromSeconds(30)};
+    private readonly TodoCalendarState _calendar;
+    private string _todoCountText="",_todoCountTip="";
+    private bool _calendarEventsAttached,_calendarDisposed;
     private readonly TodoUndoHistory _undo;
     private Button _undoButton=null!;
+    private readonly Popup _todoColorPopup=new(){StaysOpen=false,AllowsTransparency=true,Placement=PlacementMode.Bottom};
     // 删除/清除/撤销后，在计数位置短暂提示一句，让人知道「可以撤销」。
     private readonly DispatcherTimer _noticeTimer=new(){Interval=TimeSpan.FromSeconds(5)};
     private string? _notice;
@@ -784,11 +791,13 @@ internal sealed class FloatingDockWindow : Window
     private System.Drawing.Point _dragCursor;
     private double _dragWindowLeft,_dragWindowTop;
 
-    public FloatingDockWindow(GtoolsSettings settings,SettingsStore store,LocalDatabase db)
+    public FloatingDockWindow(GtoolsSettings settings,SettingsStore store,LocalDatabase db,Func<DateTime>? today=null)
     {
         _settings=settings;_store=store;_db=db;_theme=DockTheme.For(settings.MonitorTheme);
+        _calendar=new TodoCalendarState(today??(()=>DateTime.Today));
         _undo=new TodoUndoHistory(db);
-        _noticeTimer.Tick+=(_,_)=>{_noticeTimer.Stop();_notice=null;RefreshTodo();};
+        _noticeTimer.Tick+=(_,_)=>ClearTodoNotice();
+        _calendarTimer.Tick+=(_,_)=>RefreshTodoCalendar();
         Title="Gtools 悬浮条";WindowStyle=WindowStyle.None;ResizeMode=ResizeMode.NoResize;SizeToContent=SizeToContent.Height;
         ShowInTaskbar=false;Topmost=false;ShowActivated=false;AllowsTransparency=true;Background=Brushes.Transparent;
         WindowStartupLocation=WindowStartupLocation.Manual;
@@ -808,6 +817,7 @@ internal sealed class FloatingDockWindow : Window
         SourceInitialized+=(_,_)=>_desktopLayer.Initialize();
         Loaded+=(_,_)=>
         {
+            AttachCalendarEvents();SetCalendarVisible(IsVisible&&TodoVisible);
             // 第一遍尽快恢复位置；第二遍等 SizeToContent 和桌面 owner 都稳定后再校正。
             // Windows 11 上透明 owned popup 的最终 HWND 坐标可能晚于 Loaded 才确定。
             Reposition();
@@ -824,7 +834,9 @@ internal sealed class FloatingDockWindow : Window
         },DispatcherPriority.ContextIdle);
         IsVisibleChanged+=(_,_)=>
         {
-            if(!IsVisible||!IsLoaded)return;
+            SetCalendarVisible(IsVisible&&TodoVisible);
+            if(!IsVisible){_todoColorPopup.IsOpen=false;return;}
+            if(!IsLoaded)return;
             _desktopLayer.EnsureAttached();
             ScheduleReposition();
         };
@@ -835,7 +847,7 @@ internal sealed class FloatingDockWindow : Window
             _up.Text=SystemSnapshot.Rate(s.UpBytes);_down.Text=SystemSnapshot.Rate(s.DownBytes);
             _cpu.Text=$"{s.Cpu:0} %";_ram.Text=$"{s.Memory:0} %";
         };
-        Closed+=async(_,_)=>{_desktopLayer.Dispose();await _store.SaveAsync();};
+        Closed+=async(_,_)=>{DisposeTodoCalendar();_todoColorPopup.IsOpen=false;_desktopLayer.Dispose();await _store.SaveAsync();};
     }
 
     // ---------- 模块开关 ----------
@@ -870,6 +882,50 @@ internal sealed class FloatingDockWindow : Window
             ScheduleReposition();
         }
         else if(IsVisible)Hide();
+        SetCalendarVisible(IsVisible&&TodoVisible);
+    }
+
+    // Calendar refresh is independent of the performance sampler and never reloads SQLite rows.
+    private void SetCalendarVisible(bool visible)
+    {
+        if(_calendarDisposed)return;
+        if(visible){RefreshTodoCalendar();_calendarTimer.Start();}
+        else _calendarTimer.Stop();
+    }
+
+    private void RefreshTodoCalendar()
+    {
+        if(_calendarDisposed||!_calendar.Refresh())return;
+        _todoCalendar.Text=_calendar.Current!.Text;_todoCalendar.ToolTip=_calendar.Current.ToolTip;
+    }
+
+    private void AttachCalendarEvents()
+    {
+        if(_calendarEventsAttached||_calendarDisposed)return;
+        SystemEvents.TimeChanged+=CalendarTimeChanged;
+        SystemEvents.PowerModeChanged+=CalendarPowerModeChanged;
+        _calendarEventsAttached=true;
+    }
+
+    private void CalendarTimeChanged(object? sender,EventArgs e)=>QueueCalendarRefresh();
+    private void CalendarPowerModeChanged(object sender,PowerModeChangedEventArgs e)
+    {
+        if(e.Mode==PowerModes.Resume)QueueCalendarRefresh();
+    }
+
+    private void QueueCalendarRefresh()
+    {
+        if(_calendarDisposed||Dispatcher.HasShutdownStarted||Dispatcher.HasShutdownFinished)return;
+        Dispatcher.BeginInvoke(()=>{if(!_calendarDisposed&&_calendarTimer.IsEnabled)RefreshTodoCalendar();});
+    }
+
+    private void DisposeTodoCalendar()
+    {
+        _calendarDisposed=true;_calendarTimer.Stop();
+        if(!_calendarEventsAttached)return;
+        SystemEvents.TimeChanged-=CalendarTimeChanged;
+        SystemEvents.PowerModeChanged-=CalendarPowerModeChanged;
+        _calendarEventsAttached=false;
     }
 
     /// <summary>折叠状态下把未完成条数显示在箭头上，正好服务“容易忘”这个诉求。</summary>
@@ -963,10 +1019,16 @@ internal sealed class FloatingDockWindow : Window
         header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
         header.ColumnDefinitions.Add(new());
         header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
         var title=Ui.Text("待办",11.5,FontWeights.SemiBold);title.Foreground=_theme.Foreground;title.Margin=new Thickness(1,0,4,0);
         Grid.SetColumn(title,0);header.Children.Add(title);
         _todoCount.Foreground=_theme.Muted;_todoCount.Margin=new Thickness(0,0,4,0);_todoCount.VerticalAlignment=VerticalAlignment.Center;
+        _todoCount.TextWrapping=TextWrapping.NoWrap;_todoCount.TextTrimming=TextTrimming.CharacterEllipsis;
         Grid.SetColumn(_todoCount,1);header.Children.Add(_todoCount);
+        _todoCalendar.Foreground=_theme.Muted;_todoCalendar.Margin=new Thickness(0,0,6,0);
+        _todoCalendar.TextWrapping=TextWrapping.NoWrap;_todoCalendar.VerticalAlignment=VerticalAlignment.Center;
+        _todoCalendar.FlowDirection=FlowDirection.LeftToRight;
+        Grid.SetColumn(_todoCalendar,2);header.Children.Add(_todoCalendar);
         _undoButton=IconButton("撤销","↶",(_,_)=>UndoTodo());
         // 刚删完东西的时候要一眼找得到：比旁边的灰色小图标大一号，用主题色。
         _undoButton.FontSize=14;_undoButton.Width=20;_undoButton.Foreground=_theme.Foreground;_undoButton.FontWeight=FontWeights.Bold;
@@ -974,7 +1036,7 @@ internal sealed class FloatingDockWindow : Window
         var clear=IconButton("清除已完成","⌫",(_,_)=>ClearCompletedTodo());
         var actions=new StackPanel{Orientation=Orientation.Horizontal};
         actions.Children.Add(_undoButton);actions.Children.Add(clear);
-        Grid.SetColumn(actions,2);header.Children.Add(actions);
+        Grid.SetColumn(actions,3);header.Children.Add(actions);
         panel.Children.Add(header);
         EnableDrag(header);
 
@@ -1030,15 +1092,30 @@ internal sealed class FloatingDockWindow : Window
     private void ShowTodoNotice(string text)
     {
         _notice=text;_noticeTimer.Stop();_noticeTimer.Start();
+        UpdateTodoHeader();
+    }
+
+    private void ClearTodoNotice()
+    {
+        _noticeTimer.Stop();_notice=null;UpdateTodoHeader();RefreshTodoCalendar();
+    }
+
+    private void UpdateTodoHeader()
+    {
+        _todoCount.Text=_notice??_todoCountText;_todoCount.ToolTip=_notice??_todoCountTip;
+        _todoCalendar.Visibility=_notice is null?Visibility.Visible:Visibility.Collapsed;
     }
 
     private void RefreshTodo()
     {
+        _todoColorPopup.IsOpen=false;
         var items=_db.ListTodo();
         _todoRows.Children.Clear();
         foreach(var item in items)_todoRows.Children.Add(TodoRow(item,items));
         var pending=items.Count(x=>!x.IsDone);
-        _todoCount.Text=_notice??(items.Count==0?"":pending>0?$"{pending} 项未完成":"全部完成");
+        _todoCountText=items.Count==0?"":pending>0?$"{pending}项":"全部完成";
+        _todoCountTip=items.Count==0?"暂无待办":pending>0?$"{pending} 项未完成":"全部完成";
+        UpdateTodoHeader();RefreshTodoCalendar();
         _undoButton.Visibility=_undo.CanUndo?Visibility.Visible:Visibility.Collapsed;
         _undoButton.ToolTip=_undo.CanUndo?$"撤销：{_undo.NextDescription}":null;
         // 超过设定行数就滚动，避免浮窗长到顶天。
@@ -1064,18 +1141,117 @@ internal sealed class FloatingDockWindow : Window
         {
             Text=item.Text,FontSize=11.5,VerticalAlignment=VerticalAlignment.Center,
             TextTrimming=TextTrimming.CharacterEllipsis,ToolTip=item.Text,
-            Foreground=item.IsDone?_theme.Muted:_theme.Foreground,
+            Foreground=TodoColorBrush(item.TextColor),Opacity=item.IsDone?.65:1,
+            FontWeight=item.IsBold?FontWeights.Bold:FontWeights.Normal,
+            FontStyle=item.IsItalic?FontStyles.Italic:FontStyles.Normal,
             TextDecorations=item.IsDone?TextDecorations.Strikethrough:null
         };
         Grid.SetColumn(text,1);row.Children.Add(text);
 
         var index=all.ToList().IndexOf(item);
         var buttons=new StackPanel{Orientation=Orientation.Horizontal};
+        var bold=TodoStyleButton("加粗","B",item.IsBold,()=>ChangeTodoStyle(item.Id,x=>x with{IsBold=!x.IsBold}));
+        bold.FontWeight=FontWeights.Bold;buttons.Children.Add(bold);
+        var italic=TodoStyleButton("倾斜","I",item.IsItalic,()=>ChangeTodoStyle(item.Id,x=>x with{IsItalic=!x.IsItalic}));
+        italic.FontStyle=FontStyles.Italic;buttons.Children.Add(italic);
+        var color=IconButton("文字颜色","●",(_,_)=>{});color.FontSize=12;color.Foreground=TodoColorBrush(item.TextColor);
+        System.Windows.Automation.AutomationProperties.SetName(color,"文字颜色");
+        color.Click+=(_,_)=>
+        {
+            // One palette at a time; a selection reads the latest item, not a stale row snapshot.
+            _todoColorPopup.IsOpen=false;_todoColorPopup.PlacementTarget=color;
+            _todoColorPopup.Child=BuildTodoColorPalette(item.Id);_todoColorPopup.IsOpen=true;
+        };
+        buttons.Children.Add(color);
+        var top=IconButton("一键置顶","⤒",(_,_)=>MoveTodoToTop(item.Id),index>0);
+        top.FontFamily=new FontFamily("Segoe UI Symbol");top.FontSize=12;
+        System.Windows.Automation.AutomationProperties.SetName(top,"一键置顶");
+        buttons.Children.Add(top);
         buttons.Children.Add(IconButton("上移","▲",(_,_)=>Move(all,index,-1),index>0));
         buttons.Children.Add(IconButton("下移","▼",(_,_)=>Move(all,index,1),index<all.Count-1));
         buttons.Children.Add(IconButton("删除","✕",(_,_)=>DeleteTodo(item)));
         Grid.SetColumn(buttons,2);row.Children.Add(buttons);
         return row;
+    }
+
+    private Button TodoStyleButton(string label,string glyph,bool active,Action apply)
+    {
+        var button=IconButton(label,glyph,(_,_)=>apply());
+        button.Tag=active;
+        System.Windows.Automation.AutomationProperties.SetName(button,label);
+        if(active)
+        {
+            button.Background=_theme.InputBackground;button.Foreground=_theme.Foreground;
+            button.BorderBrush=_theme.Border;button.BorderThickness=new Thickness(1);
+        }
+        return button;
+    }
+
+    private void ChangeTodoStyle(long id,Func<TodoItem,TodoItem> change)
+    {
+        try
+        {
+            var current=_db.ListTodo().FirstOrDefault(x=>x.Id==id);
+            if(current is null)return;
+            var updated=change(current);
+            _db.UpdateTodoStyle(id,updated.IsBold,updated.IsItalic,updated.TextColor);
+            // Keep the user's place in a long list; styling is not a reorder or an undo step.
+            var offset=_todoScroll.VerticalOffset;RefreshTodo();_todoScroll.ScrollToVerticalOffset(offset);
+        }
+        catch(Exception ex)
+        {
+            DiagnosticLog.Write("todo","style.failed",ex.GetType().Name,"Error");
+            ShowTodoNotice("样式保存失败，请重试");
+        }
+    }
+
+    private Border BuildTodoColorPalette(long id)
+    {
+        var grid=new UniformGrid{Columns=3};
+        var selected=_db.ListTodo().FirstOrDefault(x=>x.Id==id)?.TextColor??TodoTextColor.Default;
+        foreach(var (color,label) in new[]{(TodoTextColor.Default,"默认"),(TodoTextColor.Red,"红色"),
+            (TodoTextColor.Orange,"橙色"),(TodoTextColor.Green,"绿色"),(TodoTextColor.Blue,"蓝色"),(TodoTextColor.Purple,"紫色")})
+        {
+            var content=new StackPanel{Orientation=Orientation.Horizontal};
+            content.Children.Add(new TextBlock{Text="●",Foreground=TodoColorBrush(color),Margin=new Thickness(0,0,4,0)});
+            content.Children.Add(new TextBlock{Text=label,Foreground=_theme.Foreground});
+            var button=new Button{Content=content,Tag=color,ToolTip=label,MinWidth=60,Height=26,FontSize=11.5,
+                Margin=new Thickness(2),Padding=new Thickness(4,0,4,0),
+                Background=_theme.InputBackground,BorderBrush=_theme.Border,BorderThickness=new Thickness(color==selected?2:0)};
+            System.Windows.Automation.AutomationProperties.SetName(button,label);
+            button.Click+=(_,_)=>{_todoColorPopup.IsOpen=false;ChangeTodoStyle(id,x=>x with{TextColor=color});};
+            grid.Children.Add(button);
+        }
+        var palette=new Border{Child=grid,Padding=new Thickness(4),Background=_theme.Background,
+            BorderBrush=_theme.Border,BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(4)};
+        palette.PreviewKeyDown+=(_,e)=>{if(e.Key==Key.Escape){_todoColorPopup.IsOpen=false;e.Handled=true;}};
+        return palette;
+    }
+
+    private Brush TodoColorBrush(TodoTextColor color)
+    {
+        var dark=_settings.MonitorTheme==MonitorTheme.Dark;
+        var value=color switch
+        {
+            TodoTextColor.Red=>dark?Color.FromRgb(255,142,142):Color.FromRgb(174,37,48),
+            TodoTextColor.Orange=>dark?Color.FromRgb(255,184,107):Color.FromRgb(150,74,0),
+            TodoTextColor.Green=>dark?Color.FromRgb(128,213,151):Color.FromRgb(28,116,62),
+            TodoTextColor.Blue=>dark?Color.FromRgb(135,190,255):Color.FromRgb(25,89,164),
+            TodoTextColor.Purple=>dark?Color.FromRgb(208,165,255):Color.FromRgb(119,56,166),
+            _=>(Color?)null
+        };
+        if(value is null)return _theme.Foreground;
+        var brush=new SolidColorBrush(value.Value);brush.Freeze();return brush;
+    }
+
+    private void MoveTodoToTop(long id)
+    {
+        // Read current order at click time so a delayed/stale row cannot reorder an outdated list.
+        var ids=_db.ListTodo().Select(x=>x.Id).ToList();
+        var index=ids.IndexOf(id);
+        if(index<=0)return;
+        ids.RemoveAt(index);ids.Insert(0,id);
+        _db.ReorderTodo(ids);RefreshTodo();_todoScroll.ScrollToTop();
     }
 
     private void Move(IReadOnlyList<TodoItem> all,int index,int delta)

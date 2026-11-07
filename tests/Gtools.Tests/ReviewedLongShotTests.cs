@@ -131,5 +131,15 @@ internal sealed class SyntheticChat : IDisposable
     }
     internal static void Save(SKBitmap image,string path)
     {using var data=image.Encode(SKEncodedImageFormat.Png,100);using var file=File.Create(path);data.SaveTo(file);}
-    public void Dispose(){Full.Dispose();if(Directory.Exists(Root))Directory.Delete(Root,true);}
+    public void Dispose()
+    {
+        Full.Dispose();
+        // Antivirus/indexing can briefly hold a just-written PNG even after our streams close.
+        // A bounded cleanup retry must still fail the test if the handle never becomes available.
+        for(var attempt=0;Directory.Exists(Root);attempt++)
+        {
+            try{Directory.Delete(Root,true);return;}
+            catch(IOException) when(attempt<4){Thread.Sleep(40*(attempt+1));}
+        }
+    }
 }

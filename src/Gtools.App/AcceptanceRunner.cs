@@ -20,6 +20,10 @@ internal sealed class AcceptanceRunner(LocalDatabase database,DesktopModuleRegis
         await Check("diagnostics.write","结构化诊断日志",()=>{DiagnosticLog.Write("acceptance","write.probe","诊断写入探针");return Task.FromResult(DiagnosticLog.CurrentPath is not null&&File.Exists(DiagnosticLog.CurrentPath));},checks);
         await Check("database.persistence","生词与剪贴板持久化",()=>Task.FromResult(TestDatabase()),checks);
         await Check("clipboard.recency","剪贴板最近使用排序与去重",()=>Task.FromResult(TestClipboardRecency()),checks);
+        await Check("todo.style.persistence","待办样式持久化与撤销",()=>Task.FromResult(TestTodoStyle()),checks);
+        await Check("todo.calendar.formatting","离线农历、闰月与英文星期",()=>Task.FromResult(
+            TodoCalendarFormatter.Format(new DateTime(2026,10,15))==new TodoCalendarText("九月初六·Thu.","农历九月初六，星期四")&&
+            TodoCalendarFormatter.Format(new DateTime(2025,7,25)).Text=="闰六月初一·Fri."),checks);
         await Check("workers.available","隔离 Worker 可定位",()=>Task.FromResult(new[]{"Gtools.OcrWorker","Gtools.LongShotWorker"}.All(x=>File.Exists(WorkerLocator.Find(x)))),checks);
         await Check("modules.health","模块注册表健康状态",async()=>{var health=await modules.GetHealthAsync(token);return modules.Modules.Count==7&&health.Values.All(x=>x.Health!=ModuleHealth.Failed);},checks);
         await Check("ocr.ipc","PaddleOCR 命名管道与中英模型",async()=>
@@ -57,6 +61,20 @@ internal sealed class AcceptanceRunner(LocalDatabase database,DesktopModuleRegis
             return !duplicate&&changed&&database.SearchClipboard(marker).Count==2&&database.SearchClipboardSummaries(marker).First().Id==newer.Id;
         }
         finally{foreach(var row in database.SearchClipboard(marker))database.DeleteClipboard(row.Id);}
+    }
+
+    private bool TestTodoStyle()
+    {
+        var id=database.AddTodo("合成样式验收");
+        try
+        {
+            database.UpdateTodoStyle(id,true,true,TodoTextColor.Purple);database.SetTodoDone(id,true);
+            var before=database.ListTodo().Single(x=>x.Id==id);
+            var history=new TodoUndoHistory(database);history.Delete(id);history.Undo();
+            var reopened=new LocalDatabase();reopened.Initialize();
+            return reopened.ListTodo().Single(x=>x.Id==id)==before&&before.IsBold&&before.IsItalic&&before.TextColor==TodoTextColor.Purple;
+        }
+        finally{database.DeleteTodo(id);}
     }
 
     private static byte[] CreateOcrProbe()

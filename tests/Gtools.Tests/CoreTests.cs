@@ -2,6 +2,7 @@ using Gtools.Core;
 
 namespace Gtools.Tests;
 
+[Collection("Process-wide diagnostics")]
 public sealed class CoreTests
 {
     [Fact]

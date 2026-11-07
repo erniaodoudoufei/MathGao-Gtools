@@ -12,7 +12,9 @@ public sealed record ClipboardEntry(long Id, string Kind, string Preview, string
 /// </summary>
 public sealed record ClipboardEntrySummary(long Id, string Kind, string Preview, bool IsFavorite,
     DateTimeOffset CreatedAt, bool HasImage);
-public sealed record TodoItem(long Id, string Text, bool IsDone, int SortOrder, DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt);
+public enum TodoTextColor { Default, Red, Orange, Green, Blue, Purple }
+public sealed record TodoItem(long Id, string Text, bool IsDone, int SortOrder, DateTimeOffset CreatedAt, DateTimeOffset? CompletedAt,
+    bool IsBold = false, bool IsItalic = false, TodoTextColor TextColor = TodoTextColor.Default);
 
 public sealed class LocalDatabase
 {
@@ -74,6 +76,24 @@ public sealed class LocalDatabase
         cmd.ExecuteNonQuery();
         MigrateClipboardActivity(c);
         MigrateVocabulary(c);
+        MigrateTodoStyle(c);
+    }
+
+    private static void MigrateTodoStyle(SqliteConnection connection)
+    {
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand(); command.Transaction = transaction;
+        command.CommandText = "PRAGMA table_info(todo_items)";
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var reader = command.ExecuteReader())
+            while (reader.Read()) columns.Add(reader.GetString(1));
+        foreach (var column in new[] { "is_bold", "is_italic", "text_color" })
+        {
+            if (columns.Contains(column)) continue;
+            command.CommandText = $"ALTER TABLE todo_items ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0";
+            command.ExecuteNonQuery();
+        }
+        transaction.Commit();
     }
 
     private static void MigrateClipboardActivity(SqliteConnection connection)
@@ -300,11 +320,13 @@ public sealed class LocalDatabase
     public IReadOnlyList<TodoItem> ListTodo()
     {
         using var c = Open(); using var cmd = c.CreateCommand();
-        cmd.CommandText = "SELECT id,text_value,is_done,sort_order,created_at,completed_at FROM todo_items ORDER BY sort_order, id";
+        cmd.CommandText = "SELECT id,text_value,is_done,sort_order,created_at,completed_at,is_bold,is_italic,text_color FROM todo_items ORDER BY sort_order, id";
         using var r = cmd.ExecuteReader(); var list = new List<TodoItem>();
         while (r.Read())
             list.Add(new(r.GetInt64(0), r.GetString(1), r.GetInt64(2) != 0, (int)r.GetInt64(3),
-                DateTimeOffset.Parse(r.GetString(4)), r.IsDBNull(5) ? null : DateTimeOffset.Parse(r.GetString(5))));
+                DateTimeOffset.Parse(r.GetString(4)), r.IsDBNull(5) ? null : DateTimeOffset.Parse(r.GetString(5)),
+                r.GetInt64(6) != 0, r.GetInt64(7) != 0,
+                r.GetInt64(8) is >= 0 and <= 5 ? (TodoTextColor)r.GetInt64(8) : TodoTextColor.Default));
         return list;
     }
 
@@ -314,6 +336,13 @@ public sealed class LocalDatabase
 
     public void UpdateTodoText(long id, string text) =>
         Execute("UPDATE todo_items SET text_value=$t WHERE id=$id", ("$t", text.Trim()), ("$id", id));
+
+    public void UpdateTodoStyle(long id, bool bold, bool italic, TodoTextColor color)
+    {
+        if (!Enum.IsDefined(color)) throw new ArgumentOutOfRangeException(nameof(color));
+        Execute("UPDATE todo_items SET is_bold=$b,is_italic=$i,text_color=$c WHERE id=$id",
+            ("$b", bold ? 1 : 0), ("$i", italic ? 1 : 0), ("$c", (int)color), ("$id", id));
+    }
 
     public void DeleteTodo(long id) => Execute("DELETE FROM todo_items WHERE id=$id", ("$id", id));
 
@@ -330,16 +359,19 @@ public sealed class LocalDatabase
         foreach (var item in items)
         {
             using var cmd = c.CreateCommand(); cmd.Transaction = tx;
-            cmd.CommandText = "INSERT OR IGNORE INTO todo_items(id,text_value,is_done,sort_order,created_at,completed_at) VALUES($id,$t,$v,$o,$c,$d)";
+            cmd.CommandText = "INSERT OR IGNORE INTO todo_items(id,text_value,is_done,sort_order,created_at,completed_at,is_bold,is_italic,text_color) VALUES($id,$t,$v,$o,$c,$d,$b,$i,$color)";
             cmd.Parameters.AddWithValue("$id", item.Id);
             cmd.Parameters.AddWithValue("$t", item.Text);
             cmd.Parameters.AddWithValue("$v", item.IsDone ? 1 : 0);
             cmd.Parameters.AddWithValue("$o", item.SortOrder);
             cmd.Parameters.AddWithValue("$c", item.CreatedAt.ToString("O"));
             cmd.Parameters.AddWithValue("$d", item.CompletedAt is { } done ? done.ToString("O") : DBNull.Value);
+            cmd.Parameters.AddWithValue("$b", item.IsBold ? 1 : 0);
+            cmd.Parameters.AddWithValue("$i", item.IsItalic ? 1 : 0);
+            cmd.Parameters.AddWithValue("$color", (int)item.TextColor);
             if (cmd.ExecuteNonQuery() > 0) continue;
             cmd.Parameters.RemoveAt("$id");
-            cmd.CommandText = "INSERT INTO todo_items(text_value,is_done,sort_order,created_at,completed_at) VALUES($t,$v,$o,$c,$d)";
+            cmd.CommandText = "INSERT INTO todo_items(text_value,is_done,sort_order,created_at,completed_at,is_bold,is_italic,text_color) VALUES($t,$v,$o,$c,$d,$b,$i,$color)";
             cmd.ExecuteNonQuery();
         }
         tx.Commit();
