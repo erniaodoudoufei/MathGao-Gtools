@@ -7,6 +7,7 @@ using Gtools.Core;
 
 namespace Gtools.Tests;
 
+[Collection(TodoUiTestCollection.Name)]
 public sealed class TodoStyleUiTests
 {
     private static TextBlock Text(TodoTopTests.TodoPanel panel,int row)=>((Grid)panel.Rows.Children[row]).Children.OfType<TextBlock>().Single();

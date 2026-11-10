@@ -8,6 +8,7 @@ using Gtools.Core;
 
 namespace Gtools.Tests;
 
+[Collection(TodoUiTestCollection.Name)]
 public sealed class TodoEditTests
 {
     private static void Click(Button button)=>button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));

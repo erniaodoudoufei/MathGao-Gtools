@@ -8,6 +8,7 @@ using Microsoft.Win32;
 
 namespace Gtools.Tests;
 
+[Collection(TodoUiTestCollection.Name)]
 public sealed class TodoCalendarUiTests
 {
     private static void Drain()

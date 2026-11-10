@@ -15,3 +15,4 @@
 
 - 11 月 7 日的 Windows CI（42319550338）在 `TodoStyleTests` 的数组 `.Reverse()` 调用发生 CS1503。显式改用 LINQ `Enumerable.Reverse`，保留顺序断言。使用 `global.json` 选择稳定的 .NET 8 SDK、固定 C# 12，并在 CI 中打印和校验 SDK。
 - 本地选择了 8.0.203，Release 构建零警告、零错误。源码 Release 以修复提交的 Windows CI 通过为发布条件；原失败日志作为历史记录保留。
+- 首次远程复测已通过编译，两个待办 WPF 测试在 15 秒等待上限超时。将待办 STA 测试归入独占串行集合，设置 45 秒上限并等待夹具清理完成；保留全部原有断言及测试案例。

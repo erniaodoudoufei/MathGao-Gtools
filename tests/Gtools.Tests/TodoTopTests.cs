@@ -9,6 +9,7 @@ using Gtools.Core;
 
 namespace Gtools.Tests;
 
+[Collection(TodoUiTestCollection.Name)]
 public sealed class TodoTopTests
 {
     [Theory][InlineData(1)][InlineData(11)]
@@ -73,12 +74,17 @@ public sealed class TodoTopTests
         var completed=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread=new Thread(()=>
         {
-            try{using var panel=new TodoPanel(theme,today);test(panel);completed.TrySetResult();}
+            try
+            {
+                try{using var panel=new TodoPanel(theme,today);test(panel);}
+                finally{Dispatcher.CurrentDispatcher.InvokeShutdown();}
+                completed.TrySetResult();
+            }
             catch(Exception ex){completed.TrySetException(ex);}
-            finally{Dispatcher.CurrentDispatcher.InvokeShutdown();}
         }){IsBackground=true};
         thread.SetApartmentState(ApartmentState.STA);thread.Start();
-        await completed.Task.WaitAsync(TimeSpan.FromSeconds(15));Assert.True(thread.Join(3000));
+        // Keep a bounded timeout, including disposal, without assuming hosted Windows is as fast as local Windows.
+        await completed.Task.WaitAsync(TimeSpan.FromSeconds(45));Assert.True(thread.Join(3000));
     }
 
     // Exercise the real row buttons/content, without showing a native window or loading/saving formal settings.
