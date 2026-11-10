@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Gtools.Core;
 
 namespace Gtools.Tests;
@@ -14,6 +15,38 @@ public sealed class TodoEditTests
         Enumerable.Range(0,panel.Rows.Children.Count).Single(i=>panel.Tools(i).Visibility==Visibility.Visible);
     private static int[] OpenToolsRows(TodoTopTests.TodoPanel panel)=>
         Enumerable.Range(0,panel.Rows.Children.Count).Where(i=>panel.Tools(i).Visibility==Visibility.Visible).ToArray();
+
+    [Theory]
+    [InlineData(1d,MonitorTheme.Light)][InlineData(1.25d,MonitorTheme.Light)][InlineData(1.5d,MonitorTheme.Light)][InlineData(2d,MonitorTheme.Light)]
+    [InlineData(1d,MonitorTheme.Dark)][InlineData(1.25d,MonitorTheme.Dark)][InlineData(1.5d,MonitorTheme.Dark)][InlineData(2d,MonitorTheme.Dark)]
+    public Task LastRowStyleEditsPreserveTheClickableCollapseButton(double scale,MonitorTheme theme)=>TodoTopTests.OnSta(panel=>
+    {
+        VisualTreeHelper.SetRootDpi(panel.Root,new DpiScale(scale,scale));
+        var index=panel.Rows.Children.Count-1;var rows=panel.Rows.Children.Cast<object>().ToArray();
+        var id=panel.Db.ListTodo()[index].Id;var toggle=panel.Button(index,"更多");
+        void AssertHit(Button button)
+        {
+            var point=button.TranslatePoint(new Point(button.ActualWidth/2,button.ActualHeight/2),panel.Root);
+            var hit=VisualTreeHelper.HitTest(panel.Root,point)?.VisualHit;
+            while(hit is not null&&!ReferenceEquals(hit,button))hit=VisualTreeHelper.GetParent(hit);
+            Assert.Same(button,hit);
+        }
+        panel.Scroll.ScrollToBottom();panel.Hover(index);panel.Layout();AssertHit(toggle);Click(toggle);
+        var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.ContextIdle,()=>frame.Continue=false);
+        Dispatcher.PushFrame(frame);panel.Layout();
+        var offset=panel.Scroll.VerticalOffset;
+        Assert.Equal("▴",toggle.Content);Assert.Equal("收起工具栏",toggle.ToolTip);
+        AssertHit(panel.Button(index,"加粗"));Click(panel.Button(index,"加粗"));Click(panel.Button(index,"倾斜"));
+        var palette=panel.Palette(id);Click(((System.Windows.Controls.Primitives.UniformGrid)palette.Child).Children.OfType<Button>().Single(x=>Equals(x.Tag,TodoTextColor.Red)));
+        panel.Hover(index,false);panel.Layout();
+        var item=panel.Db.ListTodo()[index];Assert.True(item.IsBold);Assert.True(item.IsItalic);Assert.Equal(TodoTextColor.Red,item.TextColor);
+        Assert.Equal(rows,panel.Rows.Children.Cast<object>().ToArray());Assert.Equal(offset,panel.Scroll.VerticalOffset);
+        Assert.Same(toggle,panel.Button(index,"更多"));AssertHit(toggle);Click(toggle);panel.Layout();
+        Assert.Empty(OpenToolsRows(panel));Assert.Equal("⋯",toggle.Content);Assert.Equal(Visibility.Collapsed,panel.Actions(index).Visibility);
+        panel.Hover(index);panel.Layout();AssertHit(toggle);Click(toggle);panel.Layout();
+        Assert.Equal(index,OpenToolsRow(panel));Assert.Equal(true,panel.Button(index,"加粗").Tag);Assert.Equal(true,panel.Button(index,"倾斜").Tag);
+        Assert.Equal(rows,panel.Rows.Children.Cast<object>().ToArray());Assert.Equal(0,panel.Undo.Count);
+    },theme);
 
     [Fact]
     public Task ActionsStayHiddenUntilHoverAndToolLineFollowsTheItem()=>TodoTopTests.OnSta(panel=>

@@ -28,6 +28,15 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Verify .NET 8 SDK selection
+        shell: pwsh
+        run: |
+          $sdkVersion = dotnet --version
+          Write-Host "Selected .NET SDK: $sdkVersion"
+          if ($LASTEXITCODE -ne 0 -or $sdkVersion -notmatch '^8\.0\.\d+$') {
+            throw 'The build must use a stable .NET 8 SDK.'
+          }
+
       - name: Restore
         run: dotnet restore .\Gtools.sln
 

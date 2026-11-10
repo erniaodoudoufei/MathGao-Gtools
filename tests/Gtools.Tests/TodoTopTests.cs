@@ -111,7 +111,8 @@ public sealed class TodoTopTests
         public StackPanel Actions(int row)=>Row(row).Children.OfType<StackPanel>().First();
         public StackPanel Tools(int row)=>Row(row).Children.OfType<StackPanel>().Last();
         public Button[] Buttons(int row)=>Row(row).Children.OfType<StackPanel>().SelectMany(p=>p.Children.OfType<Button>()).ToArray();
-        public Button Button(int row,string label)=>Buttons(row).Single(b=>Equals(b.ToolTip,label));
+        public Button Button(int row,string label)=>Buttons(row).Single(b=>label=="更多"
+            ?System.Windows.Automation.AutomationProperties.GetAutomationId(b)=="TodoToolsToggle":Equals(b.ToolTip,label));
         public TextBox? Editor(int row)=>Row(row).Children.OfType<TextBox>().SingleOrDefault();
         public void Hover(int row,bool enter=true)=>Row(row).RaiseEvent(new System.Windows.Input.MouseEventArgs(System.Windows.Input.Mouse.PrimaryDevice,0)
             {RoutedEvent=enter?System.Windows.Input.Mouse.MouseEnterEvent:System.Windows.Input.Mouse.MouseLeaveEvent});

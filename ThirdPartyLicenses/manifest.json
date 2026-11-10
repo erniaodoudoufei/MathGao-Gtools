@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedFor": "MathGao-Gtools 1.1.16",
+  "generatedFor": "MathGao-Gtools 1.1.18",
   "components": [
     {
       "name": "PaddleOCRSharp managed wrapper",

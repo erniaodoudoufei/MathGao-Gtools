@@ -783,6 +783,12 @@ internal sealed class FloatingDockWindow : Window
     // 行操作默认收起：悬停露出编辑/更多/删除，「更多」再展开样式与排序。两种状态都按事项 Id 记，
     // 上移、置顶、勾选导致整表重建后，展开的工具栏和编辑中的输入框仍跟着同一条事项。
     private long? _todoToolsId,_todoEditingId;
+    private readonly Dictionary<long,TodoRowView> _todoRowViews=new();
+    private sealed record TodoRowView(Grid Row,TextBlock? Text,StackPanel Actions,Button More,
+        StackPanel Tools,Button Bold,Button Italic,Button Color)
+    {
+        public bool Hovered { get; set; }
+    }
     private string? _todoEditDraft;
     private TextBox? _todoEditor;
     // 删除/清除/撤销后，在计数位置短暂提示一句，让人知道「可以撤销」。
@@ -1122,7 +1128,7 @@ internal sealed class FloatingDockWindow : Window
         var items=_db.ListTodo();
         if(_todoToolsId is { } tools&&items.All(x=>x.Id!=tools))_todoToolsId=null;
         if(_todoEditingId is { } editing&&items.All(x=>x.Id!=editing)){_todoEditingId=null;_todoEditDraft=null;}
-        _todoRows.Children.Clear();
+        _todoRowViews.Clear();_todoRows.Children.Clear();
         foreach(var item in items)_todoRows.Children.Add(TodoRow(item,items));
         if(editorFocused)FocusTodoEditor();
         var pending=items.Count(x=>!x.IsDone);
@@ -1181,20 +1187,13 @@ internal sealed class FloatingDockWindow : Window
         var edit=IconButton("编辑","✎",(_,_)=>BeginTodoEdit(item.Id));
         edit.FontFamily=new FontFamily("Segoe UI Symbol");edit.FontSize=11;
         actions.Children.Add(edit);
-        actions.Children.Add(TodoStyleButton("更多","⋯",toolsOpen,()=>ToggleTodoTools(item.Id)));
+        var more=IconButton("更多","⋯",(_,_)=>ToggleTodoTools(item.Id));
+        System.Windows.Automation.AutomationProperties.SetAutomationId(more,"TodoToolsToggle");
+        actions.Children.Add(more);
         actions.Children.Add(IconButton("删除","✕",(_,_)=>DeleteTodo(item)));
         foreach(var button in actions.Children.OfType<Button>())
             System.Windows.Automation.AutomationProperties.SetName(button,(string)button.ToolTip);
         Grid.SetColumn(actions,2);row.Children.Add(actions);
-        if(!editing)
-        {
-            row.MouseEnter+=(_,_)=>{row.Background=_theme.InputBackground;actions.Visibility=Visibility.Visible;};
-            row.MouseLeave+=(_,_)=>
-            {
-                if(_todoToolsId==item.Id)return;
-                row.Background=Brushes.Transparent;actions.Visibility=Visibility.Collapsed;
-            };
-        }
 
         // 低频的样式与排序收进「更多」，展开成本行下方一条工具栏；六个按钮与原来的行为完全一致。
         var index=all.ToList().IndexOf(item);
@@ -1221,6 +1220,13 @@ internal sealed class FloatingDockWindow : Window
         tools.Children.Add(IconButton("上移","▲",(_,_)=>Move(all,index,-1),index>0));
         tools.Children.Add(IconButton("下移","▼",(_,_)=>Move(all,index,1),index<all.Count-1));
         Grid.SetRow(tools,1);Grid.SetColumn(tools,1);Grid.SetColumnSpan(tools,2);row.Children.Add(tools);
+        var view=new TodoRowView(row,content as TextBlock,actions,more,tools,bold,italic,color);
+        _todoRowViews.Add(item.Id,view);ApplyTodoToolsState(item.Id,view);
+        if(!editing)
+        {
+            row.MouseEnter+=(_,_)=>{view.Hovered=true;ApplyTodoToolsState(item.Id,view);};
+            row.MouseLeave+=(_,_)=>{view.Hovered=false;ApplyTodoToolsState(item.Id,view);};
+        }
         return row;
     }
 
@@ -1306,11 +1312,30 @@ internal sealed class FloatingDockWindow : Window
 
     private void ToggleTodoTools(long id)
     {
-        _todoToolsId=_todoToolsId==id?null:id;
-        RefreshTodoKeepingScroll();
+        if(!_todoRowViews.TryGetValue(id,out var view)||view.Text is null)return;
+        var previous=_todoToolsId;
+        _todoToolsId=previous==id?null:id;
+        _todoColorPopup.IsOpen=false;
+        if(previous is { } old&&old!=id&&_todoRowViews.TryGetValue(old,out var oldView))ApplyTodoToolsState(old,oldView);
+        ApplyTodoToolsState(id,view);
         // 末行展开后工具栏可能落到滚动区外，布局完成后把它带进视野。
         if(_todoToolsId==id)Dispatcher.BeginInvoke(()=>
-            _todoRows.Children.OfType<FrameworkElement>().FirstOrDefault(x=>Equals(x.Tag,id))?.BringIntoView(),DispatcherPriority.Loaded);
+        {
+            if(_todoToolsId==id&&_todoRowViews.TryGetValue(id,out var current)&&ReferenceEquals(current,view))view.Row.BringIntoView();
+        },DispatcherPriority.Loaded);
+    }
+
+    private void ApplyTodoToolsState(long id,TodoRowView view)
+    {
+        var open=view.Text is not null&&_todoToolsId==id;
+        var showActions=view.Text is not null&&(open||view.Hovered);
+        view.Row.Background=showActions?_theme.InputBackground:Brushes.Transparent;
+        view.Actions.Visibility=showActions?Visibility.Visible:Visibility.Collapsed;
+        view.Tools.Visibility=open?Visibility.Visible:Visibility.Collapsed;
+        view.More.Content=open?"▴":"⋯";
+        view.More.ToolTip=open?"收起工具栏":"更多";
+        System.Windows.Automation.AutomationProperties.SetName(view.More,(string)view.More.ToolTip);
+        ApplyTodoButtonState(view.More,open);
     }
 
     private void RefreshTodoKeepingScroll()
@@ -1321,14 +1346,17 @@ internal sealed class FloatingDockWindow : Window
     private Button TodoStyleButton(string label,string glyph,bool active,Action apply)
     {
         var button=IconButton(label,glyph,(_,_)=>apply());
-        button.Tag=active;
         System.Windows.Automation.AutomationProperties.SetName(button,label);
-        if(active)
-        {
-            button.Background=_theme.InputBackground;button.Foreground=_theme.Foreground;
-            button.BorderBrush=_theme.Border;button.BorderThickness=new Thickness(1);
-        }
+        ApplyTodoButtonState(button,active);
         return button;
+    }
+
+    private void ApplyTodoButtonState(Button button,bool active)
+    {
+        button.Tag=active;
+        button.Background=active?_theme.InputBackground:Brushes.Transparent;
+        button.Foreground=active?_theme.Foreground:_theme.Muted;
+        button.BorderBrush=_theme.Border;button.BorderThickness=new Thickness(active?1:0);
     }
 
     private void ChangeTodoStyle(long id,Func<TodoItem,TodoItem> change)
@@ -1339,8 +1367,18 @@ internal sealed class FloatingDockWindow : Window
             if(current is null)return;
             var updated=change(current);
             _db.UpdateTodoStyle(id,updated.IsBold,updated.IsItalic,updated.TextColor);
-            // Keep the user's place in a long list; styling is not a reorder or an undo step.
-            var offset=_todoScroll.VerticalOffset;RefreshTodo();_todoScroll.ScrollToVerticalOffset(offset);
+            // Keep the same visual row and hit targets; styling is not a reorder or an undo step.
+            if(_todoRowViews.TryGetValue(id,out var view))
+            {
+                var brush=TodoColorBrush(updated.TextColor);
+                if(view.Text is { } label)
+                {
+                    label.FontWeight=updated.IsBold?FontWeights.Bold:FontWeights.Normal;
+                    label.FontStyle=updated.IsItalic?FontStyles.Italic:FontStyles.Normal;
+                    label.Foreground=brush;
+                }
+                ApplyTodoButtonState(view.Bold,updated.IsBold);ApplyTodoButtonState(view.Italic,updated.IsItalic);view.Color.Foreground=brush;
+            }
         }
         catch(Exception ex)
         {

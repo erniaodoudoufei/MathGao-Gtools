@@ -32,7 +32,7 @@ public sealed class TodoStyleTests : IDisposable
         }
         db.ReorderTodo(db.ListTodo().Select(x=>x.Id).Reverse().ToArray());
         var restored=Database().ListTodo();
-        Assert.Equal(Enum.GetValues<TodoTextColor>().Reverse(),restored.Select(x=>x.TextColor));
+        Assert.Equal(Enumerable.Reverse(Enum.GetValues<TodoTextColor>()),restored.Select(x=>x.TextColor));
         Assert.All(restored,x=>{Assert.True(x.IsBold);Assert.True(x.IsItalic);Assert.False(x.IsDone);Assert.Equal("合成编辑",x.Text);});
         var plainId=db.AddTodo("合成默认");var plain=db.ListTodo().Single(x=>x.Id==plainId);
         Assert.False(plain.IsBold);Assert.False(plain.IsItalic);Assert.Equal(TodoTextColor.Default,plain.TextColor);
