@@ -51,7 +51,7 @@ internal sealed class DashboardWindow : Window
         Add("聊天长截图",s.LongShotEnabled,$"Alt+Shift+S；手动{(s.LongShotScrollUp?"向上":"向下")}滚动，逐帧确认接缝");
         Add("历史剪贴板",s.ClipboardEnabled,"Ctrl+~；SQLite FTS5，文字/富文本/图片");
         Add("性能悬浮条",s.MonitorEnabled,"上/下行、CPU、内存，每秒刷新");
-        Add("待办清单",s.TodoEnabled,s.TodoExpanded?"拼在流量条上方；悬停一行可编辑、删除，⋯ 展开样式与排序":"已折叠，点流量条右侧箭头或托盘菜单展开");
+        Add("待办清单",s.TodoEnabled,s.TodoExpanded?"拼在流量条上方；悬停一行可加粗、删除，⋯ 展开编辑和样式":"已折叠，点流量条右侧箭头或托盘菜单展开");
         _status.Children.Add(_health);
     }
     public void SetHealth((string Name,ModuleStatus Status)[] statuses)=>_health.Text="健康检查："+string.Join(" · ",statuses.Select(x=>$"{x.Name} {HealthMark(x.Status.Health)}"));
@@ -756,11 +756,12 @@ internal sealed class ClipboardViewRow : System.ComponentModel.INotifyPropertyCh
 /// 位置约定：设置里存的锚点是<b>最下面那一块的左上角</b>。待办块展开时窗口向上生长，
 /// 下面的流量条必须原地不动，见 <see cref="FloatingDockLayout"/>。
 /// </summary>
-internal sealed class FloatingDockWindow : Window
+internal sealed partial class FloatingDockWindow : Window
 {
     // 折叠宽度比原来的 170 多出 18px，正好补上折叠箭头占掉的那一列；
     // 否则速率会被截成「25.4 KB/」这种样子。两列指标的可用宽度和加箭头之前一致。
     private const double CollapsedWidth=188,ExpandedWidth=262,BlockGap=4;
+    private const double TodoToolsToggleHeight=21;
 
     private readonly TextBlock _up=new(),_down=new(),_cpu=new(),_ram=new();
     private readonly DispatcherTimer _timer=new(){Interval=TimeSpan.FromSeconds(1)};
@@ -780,7 +781,7 @@ internal sealed class FloatingDockWindow : Window
     private readonly TodoUndoHistory _undo;
     private Button _undoButton=null!;
     private readonly Popup _todoColorPopup=new(){StaysOpen=false,AllowsTransparency=true,Placement=PlacementMode.Bottom};
-    // 行操作默认收起：悬停露出编辑/更多/删除，「更多」再展开样式与排序。两种状态都按事项 Id 记，
+    // 行操作默认收起：悬停露出加粗/更多/删除，「更多」再展开编辑与样式。两种状态都按事项 Id 记，
     // 上移、置顶、勾选导致整表重建后，展开的工具栏和编辑中的输入框仍跟着同一条事项。
     private long? _todoToolsId,_todoEditingId;
     private readonly Dictionary<long,TodoRowView> _todoRowViews=new();
@@ -818,6 +819,7 @@ internal sealed class FloatingDockWindow : Window
         _desktopLayer.PlacementInvalidated+=(_,_)=>ScheduleReposition();
 
         _todoScroll=new ScrollViewer{Content=_todoRows,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled};
+        WireTodoDrag();
         _todoBlock=BuildTodoBlock();
         (_monitorBlock,_chevron)=BuildMonitorBlock();
         _root.Children.Add(_todoBlock);_root.Children.Add(_monitorBlock);
@@ -1063,9 +1065,10 @@ internal sealed class FloatingDockWindow : Window
         };
         // ShowActivated=false 的置顶窗口不会自动接管键盘焦点，点输入框时要显式激活。
         _todoInput.PreviewMouseLeftButtonDown+=(_,_)=>{Activate();_todoInput.Focus();};
-        panel.Children.Add(_todoInput);
+        panel.Children.Add(BuildTodoEntry());
 
-        panel.Children.Add(_todoScroll);
+        var list=new Grid();list.Children.Add(_todoScroll);list.Children.Add(_todoDragOverlay);
+        panel.Children.Add(list);
         return new Border
         {
             Background=_theme.Background,BorderBrush=_theme.Border,BorderThickness=new Thickness(1),
@@ -1077,7 +1080,12 @@ internal sealed class FloatingDockWindow : Window
     {
         var text=_todoInput.Text.Trim();
         if(text.Length==0)return;
-        _db.AddTodo(text);_todoInput.Clear();RefreshTodo();
+        try
+        {
+            var id=_db.AddTodo(text,_newTodoColor);_todoInput.Clear();SelectNewTodoColor(TodoTextColor.Default);
+            RefreshTodoKeepingScroll();BringTodoIntoView(id);
+        }
+        catch(Exception ex){DiagnosticLog.Write("todo","add.failed",ex.GetType().Name,"Error");ShowTodoNotice("添加待办失败，请重试");}
     }
 
     private void DeleteTodo(TodoItem item)
@@ -1126,10 +1134,17 @@ internal sealed class FloatingDockWindow : Window
         if(_todoEditingId is not null&&_todoEditor is not null)_todoEditDraft=_todoEditor.Text;
         _todoEditor=null;
         var items=_db.ListTodo();
+        InitializeTodoGroups(items);
+        _todoDragItems=items;
         if(_todoToolsId is { } tools&&items.All(x=>x.Id!=tools))_todoToolsId=null;
         if(_todoEditingId is { } editing&&items.All(x=>x.Id!=editing)){_todoEditingId=null;_todoEditDraft=null;}
         _todoRowViews.Clear();_todoRows.Children.Clear();
-        foreach(var item in items)_todoRows.Children.Add(TodoRow(item,items));
+        TodoItem? previous=null;
+        foreach(var item in TodoBoardOrder.Display(items,_todoGroups))
+        {
+            var separate=previous is not null&&!previous.IsDone&&(item.IsDone||item.TextColor!=previous.TextColor);
+            _todoRows.Children.Add(TodoRow(item,items,separate));previous=item;
+        }
         if(editorFocused)FocusTodoEditor();
         var pending=items.Count(x=>!x.IsDone);
         _todoCountText=items.Count==0?"":pending>0?$"{pending}项":"全部完成";
@@ -1142,7 +1157,7 @@ internal sealed class FloatingDockWindow : Window
         UpdateChevron();
     }
 
-    private UIElement TodoRow(TodoItem item,IReadOnlyList<TodoItem> all)
+    private UIElement TodoRow(TodoItem item,IReadOnlyList<TodoItem> all,bool separate)
     {
         var editing=_todoEditingId==item.Id;
         var toolsOpen=!editing&&_todoToolsId==item.Id;
@@ -1151,15 +1166,15 @@ internal sealed class FloatingDockWindow : Window
         row.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
         row.ColumnDefinitions.Add(new());
         row.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
-        // 首行按按钮高度留位：悬停时按钮出现不会把这一行顶高，列表也就不会跟着抖；总高度与改版前一致。
-        row.RowDefinitions.Add(new(){Height=GridLength.Auto,MinHeight=17});
+        // 提前给较高的展开按钮留位，避免悬停时突然撑高这一行。
+        row.RowDefinitions.Add(new(){Height=GridLength.Auto,MinHeight=TodoToolsToggleHeight});
         row.RowDefinitions.Add(new(){Height=GridLength.Auto});
 
         // 勾选框和行内按钮都不抢键盘焦点：编辑某条时去点别的行，编辑框不会先失焦把整表重建掉，导致这一下点空。
         var check=new CheckBox{IsChecked=item.IsDone,VerticalAlignment=VerticalAlignment.Center,Margin=new Thickness(1,0,4,0),Focusable=false};
         // 用 Checked/Unchecked 而不是 Click：勾选状态还可能被鼠标以外的途径改变（键盘、辅助功能/UI 自动化），
         // 只挂 Click 的话界面打了勾但数据库没写，重启就丢。
-        void Toggled(object? _,RoutedEventArgs __){_db.SetTodoDone(item.Id,check.IsChecked==true);RefreshTodo();}
+        void Toggled(object? _,RoutedEventArgs __){_db.SetTodoDone(item.Id,check.IsChecked==true);RefreshTodoKeepingScroll();}
         check.Checked+=Toggled;check.Unchecked+=Toggled;
         Grid.SetColumn(check,0);row.Children.Add(check);
 
@@ -1177,6 +1192,11 @@ internal sealed class FloatingDockWindow : Window
                 TextDecorations=item.IsDone?TextDecorations.Strikethrough:null
             };
             text.MouseLeftButtonDown+=(_,e)=>{if(e.ClickCount==2){BeginTodoEdit(item.Id);e.Handled=true;}};
+            if(!item.IsDone)
+            {
+                text.Cursor=Cursors.SizeNS;
+                text.PreviewMouseLeftButtonDown+=(_,e)=>StartTodoDragCandidate(item,e);
+            }
             content=text;
         }
         Grid.SetColumn(content,1);row.Children.Add(content);
@@ -1184,10 +1204,10 @@ internal sealed class FloatingDockWindow : Window
         // 常用的三个：平时隐藏，悬停才出现；工具栏展开时常驻，方便再点「更多」收起。
         var actions=new StackPanel{Orientation=Orientation.Horizontal,Margin=new Thickness(3,0,0,0),
             Visibility=toolsOpen?Visibility.Visible:Visibility.Collapsed};
-        var edit=IconButton("编辑","✎",(_,_)=>BeginTodoEdit(item.Id));
-        edit.FontFamily=new FontFamily("Segoe UI Symbol");edit.FontSize=11;
-        actions.Children.Add(edit);
+        var bold=TodoStyleButton("加粗","B",item.IsBold,()=>ChangeTodoStyle(item.Id,x=>x with{IsBold=!x.IsBold}));
+        bold.FontWeight=FontWeights.Bold;actions.Children.Add(bold);
         var more=IconButton("更多","⋯",(_,_)=>ToggleTodoTools(item.Id));
+        more.Width=28;more.Height=TodoToolsToggleHeight;more.FontSize=14;
         System.Windows.Automation.AutomationProperties.SetAutomationId(more,"TodoToolsToggle");
         actions.Children.Add(more);
         actions.Children.Add(IconButton("删除","✕",(_,_)=>DeleteTodo(item)));
@@ -1195,12 +1215,12 @@ internal sealed class FloatingDockWindow : Window
             System.Windows.Automation.AutomationProperties.SetName(button,(string)button.ToolTip);
         Grid.SetColumn(actions,2);row.Children.Add(actions);
 
-        // 低频的样式与排序收进「更多」，展开成本行下方一条工具栏；六个按钮与原来的行为完全一致。
-        var index=all.ToList().IndexOf(item);
+        // 编辑、其余样式和组内置顶放在工具栏；普通排序使用文字拖动。
         var tools=new StackPanel{Orientation=Orientation.Horizontal,Margin=new Thickness(0,1,0,1),
             Visibility=toolsOpen?Visibility.Visible:Visibility.Collapsed};
-        var bold=TodoStyleButton("加粗","B",item.IsBold,()=>ChangeTodoStyle(item.Id,x=>x with{IsBold=!x.IsBold}));
-        bold.FontWeight=FontWeights.Bold;tools.Children.Add(bold);
+        var edit=IconButton("编辑","✎",(_,_)=>BeginTodoEdit(item.Id));
+        edit.FontFamily=new FontFamily("Segoe UI Symbol");edit.FontSize=11;
+        System.Windows.Automation.AutomationProperties.SetName(edit,"编辑");tools.Children.Add(edit);
         var italic=TodoStyleButton("倾斜","I",item.IsItalic,()=>ChangeTodoStyle(item.Id,x=>x with{IsItalic=!x.IsItalic}));
         italic.FontStyle=FontStyles.Italic;tools.Children.Add(italic);
         var color=IconButton("文字颜色","●",(_,_)=>{});color.FontSize=12;color.Foreground=TodoColorBrush(item.TextColor);
@@ -1212,14 +1232,21 @@ internal sealed class FloatingDockWindow : Window
             _todoColorPopup.Child=BuildTodoColorPalette(item.Id);_todoColorPopup.IsOpen=true;
         };
         tools.Children.Add(color);
-        tools.Children.Add(new Border{Width=1,Height=11,Margin=new Thickness(5,0,4,0),Background=_theme.Border,VerticalAlignment=VerticalAlignment.Center});
-        var top=IconButton("一键置顶","⤒",(_,_)=>MoveTodoToTop(item.Id),index>0);
-        top.FontFamily=new FontFamily("Segoe UI Symbol");top.FontSize=12;
-        System.Windows.Automation.AutomationProperties.SetName(top,"一键置顶");
-        tools.Children.Add(top);
-        tools.Children.Add(IconButton("上移","▲",(_,_)=>Move(all,index,-1),index>0));
-        tools.Children.Add(IconButton("下移","▼",(_,_)=>Move(all,index,1),index<all.Count-1));
+        if(!item.IsDone)
+        {
+            tools.Children.Add(new Border{Width=1,Height=11,Margin=new Thickness(5,0,4,0),Background=_theme.Border,VerticalAlignment=VerticalAlignment.Center});
+            var first=all.First(x=>!x.IsDone&&x.TextColor==item.TextColor).Id==item.Id;
+            var top=IconButton("一键置顶","⤒",(_,_)=>MoveTodoToTop(item.Id),!first);
+            top.FontFamily=new FontFamily("Segoe UI Symbol");top.FontSize=12;
+            System.Windows.Automation.AutomationProperties.SetName(top,"置顶到同色组首");tools.Children.Add(top);
+        }
         Grid.SetRow(tools,1);Grid.SetColumn(tools,1);Grid.SetColumnSpan(tools,2);row.Children.Add(tools);
+        if(separate)
+        {
+            var line=new Border{Height=1,Margin=new Thickness(0,-1,0,0),Background=_theme.Border,
+                VerticalAlignment=VerticalAlignment.Top,IsHitTestVisible=false,Opacity=.55};
+            Grid.SetColumnSpan(line,3);row.Children.Add(line);
+        }
         var view=new TodoRowView(row,content as TextBlock,actions,more,tools,bold,italic,color);
         _todoRowViews.Add(item.Id,view);ApplyTodoToolsState(item.Id,view);
         if(!editing)
@@ -1366,6 +1393,10 @@ internal sealed class FloatingDockWindow : Window
             var current=_db.ListTodo().FirstOrDefault(x=>x.Id==id);
             if(current is null)return;
             var updated=change(current);
+            if(updated.TextColor!=current.TextColor)
+            {
+                _db.ChangeTodoColor(id,updated.TextColor);RefreshTodoKeepingScroll();BringTodoIntoView(id);return;
+            }
             _db.UpdateTodoStyle(id,updated.IsBold,updated.IsItalic,updated.TextColor);
             // Keep the same visual row and hit targets; styling is not a reorder or an undo step.
             if(_todoRowViews.TryGetValue(id,out var view))
@@ -1389,10 +1420,14 @@ internal sealed class FloatingDockWindow : Window
 
     private Border BuildTodoColorPalette(long id)
     {
-        var grid=new UniformGrid{Columns=3};
         var selected=_db.ListTodo().FirstOrDefault(x=>x.Id==id)?.TextColor??TodoTextColor.Default;
-        foreach(var (color,label) in new[]{(TodoTextColor.Default,"默认"),(TodoTextColor.Red,"红色"),
-            (TodoTextColor.Orange,"橙色"),(TodoTextColor.Green,"绿色"),(TodoTextColor.Blue,"蓝色"),(TodoTextColor.Purple,"紫色")})
+        return BuildTodoPalette(selected,color=>ChangeTodoStyle(id,x=>x with{TextColor=color}));
+    }
+
+    private Border BuildTodoPalette(TodoTextColor selected,Action<TodoTextColor> apply)
+    {
+        var grid=new UniformGrid{Columns=3};
+        foreach(var (color,label) in TodoColors)
         {
             var content=new StackPanel{Orientation=Orientation.Horizontal};
             content.Children.Add(new TextBlock{Text="●",Foreground=TodoColorBrush(color),Margin=new Thickness(0,0,4,0)});
@@ -1401,7 +1436,7 @@ internal sealed class FloatingDockWindow : Window
                 Margin=new Thickness(2),Padding=new Thickness(4,0,4,0),
                 Background=_theme.InputBackground,BorderBrush=_theme.Border,BorderThickness=new Thickness(color==selected?2:0)};
             System.Windows.Automation.AutomationProperties.SetName(button,label);
-            button.Click+=(_,_)=>{_todoColorPopup.IsOpen=false;ChangeTodoStyle(id,x=>x with{TextColor=color});};
+            button.Click+=(_,_)=>{_todoColorPopup.IsOpen=false;apply(color);};
             grid.Children.Add(button);
         }
         var palette=new Border{Child=grid,Padding=new Thickness(4),Background=_theme.Background,
@@ -1428,21 +1463,10 @@ internal sealed class FloatingDockWindow : Window
 
     private void MoveTodoToTop(long id)
     {
-        // Read current order at click time so a delayed/stale row cannot reorder an outdated list.
-        var ids=_db.ListTodo().Select(x=>x.Id).ToList();
-        var index=ids.IndexOf(id);
-        if(index<=0)return;
-        ids.RemoveAt(index);ids.Insert(0,id);
-        _db.ReorderTodo(ids);RefreshTodo();_todoScroll.ScrollToTop();
-    }
-
-    private void Move(IReadOnlyList<TodoItem> all,int index,int delta)
-    {
-        var target=index+delta;
-        if(index<0||target<0||target>=all.Count)return;
-        var ids=all.Select(x=>x.Id).ToList();
-        (ids[index],ids[target])=(ids[target],ids[index]);
-        _db.ReorderTodo(ids);RefreshTodo();
+        var items=_db.ListTodo();var item=items.FirstOrDefault(x=>x.Id==id&&!x.IsDone);
+        if(item is null)return;
+        var first=items.First(x=>!x.IsDone&&x.TextColor==item.TextColor);
+        if(ApplyTodoDrop(TodoBoardOrder.Resolve(items,_todoGroups,id,first.Id,false)))BringTodoIntoView(id);
     }
 
     private Button IconButton(string tip,string glyph,RoutedEventHandler click,bool enabled=true)

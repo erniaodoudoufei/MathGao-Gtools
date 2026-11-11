@@ -317,6 +317,32 @@ public sealed class LocalDatabase
         return (long)(cmd.ExecuteScalar() ?? 0L);
     }
 
+    public long AddTodo(string text, TodoTextColor color)
+    {
+        if (!Enum.IsDefined(color)) throw new ArgumentOutOfRangeException(nameof(color));
+        using var c = Open(); using var tx = c.BeginTransaction(); using var cmd = c.CreateCommand(); cmd.Transaction = tx;
+        var order = TodoGroupHead(cmd, color);
+        cmd.CommandText = "INSERT INTO todo_items(text_value,is_done,sort_order,created_at,text_color) VALUES($t,0,$o,$d,$c); SELECT last_insert_rowid();";
+        cmd.Parameters.AddWithValue("$t", text.Trim()); cmd.Parameters.AddWithValue("$o", order);
+        cmd.Parameters.AddWithValue("$d", DateTimeOffset.Now.ToString("O")); cmd.Parameters.AddWithValue("$c", (int)color);
+        var id = (long)(cmd.ExecuteScalar() ?? 0L); tx.Commit(); return id;
+    }
+
+    private static long TodoGroupHead(SqliteCommand cmd, TodoTextColor color)
+    {
+        cmd.CommandText = "SELECT COALESCE(MIN(CASE WHEN is_done=0 AND text_color=$color THEN sort_order END)-1,MAX(sort_order)+1,1) FROM todo_items";
+        cmd.Parameters.AddWithValue("$color", (int)color);
+        var order = (long)cmd.ExecuteScalar()!;
+        if (order < int.MinValue || order > int.MaxValue)
+        {
+            cmd.CommandText = "WITH ranked AS (SELECT id, ROW_NUMBER() OVER (ORDER BY sort_order,id) AS n FROM todo_items) UPDATE todo_items SET sort_order=(SELECT n FROM ranked WHERE ranked.id=todo_items.id)";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "SELECT COALESCE(MIN(CASE WHEN is_done=0 AND text_color=$color THEN sort_order END)-1,MAX(sort_order)+1,1) FROM todo_items";
+            order = (long)cmd.ExecuteScalar()!;
+        }
+        cmd.Parameters.Clear(); return order;
+    }
+
     public IReadOnlyList<TodoItem> ListTodo()
     {
         using var c = Open(); using var cmd = c.CreateCommand();
@@ -342,6 +368,16 @@ public sealed class LocalDatabase
         if (!Enum.IsDefined(color)) throw new ArgumentOutOfRangeException(nameof(color));
         Execute("UPDATE todo_items SET is_bold=$b,is_italic=$i,text_color=$c WHERE id=$id",
             ("$b", bold ? 1 : 0), ("$i", italic ? 1 : 0), ("$c", (int)color), ("$id", id));
+    }
+
+    public void ChangeTodoColor(long id, TodoTextColor color)
+    {
+        if (!Enum.IsDefined(color)) throw new ArgumentOutOfRangeException(nameof(color));
+        using var c = Open(); using var tx = c.BeginTransaction(); using var cmd = c.CreateCommand(); cmd.Transaction = tx;
+        var order = TodoGroupHead(cmd, color);
+        cmd.CommandText = "UPDATE todo_items SET text_color=$c,sort_order=CASE WHEN is_done=0 THEN $o ELSE sort_order END WHERE id=$id AND text_color<>$c";
+        cmd.Parameters.AddWithValue("$c", (int)color); cmd.Parameters.AddWithValue("$o", order); cmd.Parameters.AddWithValue("$id", id);
+        cmd.ExecuteNonQuery(); tx.Commit();
     }
 
     public void DeleteTodo(long id) => Execute("DELETE FROM todo_items WHERE id=$id", ("$id", id));

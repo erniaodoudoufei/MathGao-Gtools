@@ -12,6 +12,12 @@ namespace Gtools.Tests;
 public sealed class TodoEditTests
 {
     private static void Click(Button button)=>button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+    private static void OpenEditor(TodoTopTests.TodoPanel panel,int row)
+    {
+        if(panel.Tools(row).Visibility!=Visibility.Visible)Click(panel.Button(row,"更多"));
+        Assert.Equal(Visibility.Visible,panel.Tools(row).Visibility);
+        Click(panel.Button(row,"编辑"));
+    }
     private static int OpenToolsRow(TodoTopTests.TodoPanel panel)=>
         Enumerable.Range(0,panel.Rows.Children.Count).Single(i=>panel.Tools(i).Visibility==Visibility.Visible);
     private static int[] OpenToolsRows(TodoTopTests.TodoPanel panel)=>
@@ -25,26 +31,36 @@ public sealed class TodoEditTests
         VisualTreeHelper.SetRootDpi(panel.Root,new DpiScale(scale,scale));
         var index=panel.Rows.Children.Count-1;var rows=panel.Rows.Children.Cast<object>().ToArray();
         var id=panel.Db.ListTodo()[index].Id;var toggle=panel.Button(index,"更多");
-        void AssertHit(Button button)
+        void AssertHit(Button button,Point? offsetInButton=null)
         {
-            var point=button.TranslatePoint(new Point(button.ActualWidth/2,button.ActualHeight/2),panel.Root);
+            var point=button.TranslatePoint(offsetInButton??new Point(button.ActualWidth/2,button.ActualHeight/2),panel.Root);
             var hit=VisualTreeHelper.HitTest(panel.Root,point)?.VisualHit;
             while(hit is not null&&!ReferenceEquals(hit,button))hit=VisualTreeHelper.GetParent(hit);
             Assert.Same(button,hit);
         }
-        panel.Scroll.ScrollToBottom();panel.Hover(index);panel.Layout();AssertHit(toggle);Click(toggle);
+        void AssertEnlargedHitArea()
+        {
+            Assert.Equal(28,toggle.ActualWidth);Assert.Equal(21,toggle.ActualHeight);Assert.Equal(14,toggle.FontSize);
+            AssertHit(toggle,new Point(2,10));AssertHit(toggle,new Point(26,10));
+            AssertHit(toggle,new Point(14,1));AssertHit(toggle,new Point(14,20));
+        }
+        panel.Scroll.ScrollToBottom();panel.Layout();var collapsedHeight=panel.Row(index).ActualHeight;
+        panel.Hover(index);panel.Layout();Assert.Equal(collapsedHeight,panel.Row(index).ActualHeight);
+        Assert.Equal(21,panel.Row(index).RowDefinitions[0].ActualHeight);
+        Assert.Equal(panel.Settings.TodoVisibleRows*24,panel.Scroll.MaxHeight);
+        Assert.Equal(18,panel.Field<Button>("_chevron").Width);
+        AssertEnlargedHitArea();Click(toggle);
         var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.ContextIdle,()=>frame.Continue=false);
         Dispatcher.PushFrame(frame);panel.Layout();
         var offset=panel.Scroll.VerticalOffset;
         Assert.Equal("▴",toggle.Content);Assert.Equal("收起工具栏",toggle.ToolTip);
         AssertHit(panel.Button(index,"加粗"));Click(panel.Button(index,"加粗"));Click(panel.Button(index,"倾斜"));
-        var palette=panel.Palette(id);Click(((System.Windows.Controls.Primitives.UniformGrid)palette.Child).Children.OfType<Button>().Single(x=>Equals(x.Tag,TodoTextColor.Red)));
         panel.Hover(index,false);panel.Layout();
-        var item=panel.Db.ListTodo()[index];Assert.True(item.IsBold);Assert.True(item.IsItalic);Assert.Equal(TodoTextColor.Red,item.TextColor);
+        var item=panel.Db.ListTodo().Single(x=>x.Id==id);Assert.True(item.IsBold);Assert.True(item.IsItalic);
         Assert.Equal(rows,panel.Rows.Children.Cast<object>().ToArray());Assert.Equal(offset,panel.Scroll.VerticalOffset);
-        Assert.Same(toggle,panel.Button(index,"更多"));AssertHit(toggle);Click(toggle);panel.Layout();
+        Assert.Same(toggle,panel.Button(index,"更多"));AssertEnlargedHitArea();Click(toggle);panel.Layout();
         Assert.Empty(OpenToolsRows(panel));Assert.Equal("⋯",toggle.Content);Assert.Equal(Visibility.Collapsed,panel.Actions(index).Visibility);
-        panel.Hover(index);panel.Layout();AssertHit(toggle);Click(toggle);panel.Layout();
+        panel.Hover(index);panel.Layout();AssertEnlargedHitArea();Click(toggle);panel.Layout();
         Assert.Equal(index,OpenToolsRow(panel));Assert.Equal(true,panel.Button(index,"加粗").Tag);Assert.Equal(true,panel.Button(index,"倾斜").Tag);
         Assert.Equal(rows,panel.Rows.Children.Cast<object>().ToArray());Assert.Equal(0,panel.Undo.Count);
     },theme);
@@ -59,7 +75,7 @@ public sealed class TodoEditTests
         }
         panel.Hover(4);Assert.Equal(Visibility.Visible,panel.Actions(4).Visibility);
         Assert.Equal(Visibility.Collapsed,panel.Tools(4).Visibility);Assert.NotSame(Brushes.Transparent,panel.Row(4).Background);
-        Assert.Equal(new[]{"编辑","更多","删除"},panel.Actions(4).Children.OfType<Button>().Select(b=>b.ToolTip));
+        Assert.Equal(new[]{"加粗","更多","删除"},panel.Actions(4).Children.OfType<Button>().Select(b=>b.ToolTip));
         panel.Hover(4,false);Assert.Equal(Visibility.Collapsed,panel.Actions(4).Visibility);Assert.Same(Brushes.Transparent,panel.Row(4).Background);
 
         var before=panel.Db.ListTodo();var target=before[7];
@@ -69,7 +85,7 @@ public sealed class TodoEditTests
         panel.Hover(7);panel.Hover(7,false);Assert.Equal(Visibility.Visible,panel.Actions(7).Visibility);
         Assert.Equal(before,panel.Db.ListTodo());Assert.Equal(0,panel.Undo.Count);
 
-        Click(panel.Button(7,"上移"));Assert.Equal(target.Id,panel.Db.ListTodo()[6].Id);Assert.Equal(6,OpenToolsRow(panel));
+        Assert.True(panel.Drop(target.Id,before[6].Id,false));Assert.Equal(target.Id,panel.IdAt(6));Assert.Equal(6,OpenToolsRow(panel));
         Click(panel.Button(6,"一键置顶"));Assert.Equal(target.Id,panel.Db.ListTodo()[0].Id);Assert.Equal(0,OpenToolsRow(panel));
         Click(panel.Button(0,"更多"));Assert.Empty(OpenToolsRows(panel));
 
@@ -83,11 +99,11 @@ public sealed class TodoEditTests
     public Task EditButtonSavesTrimmedTextWithEnterAndKeepsEverythingElse()=>TodoTopTests.OnSta(panel=>
     {
         var id=panel.Db.ListTodo()[5].Id;panel.Db.UpdateTodoStyle(id,true,false,TodoTextColor.Purple);panel.Db.SetTodoDone(id,true);panel.Refresh();
-        var before=panel.Db.ListTodo();var item=before[5];
-        Click(panel.Button(5,"编辑"));
-        var editor=panel.Editor(5);Assert.NotNull(editor);Assert.Equal(item.Text,editor.Text);
-        Assert.Empty(panel.Row(5).Children.OfType<TextBlock>());
-        Assert.Equal(Visibility.Collapsed,panel.Actions(5).Visibility);Assert.Equal(Visibility.Collapsed,panel.Tools(5).Visibility);
+        var before=panel.Db.ListTodo();var item=before.Single(x=>x.Id==id);var row=panel.Index(id);
+        OpenEditor(panel,row);
+        var editor=panel.Editor(row);Assert.NotNull(editor);Assert.Equal(item.Text,editor.Text);
+        Assert.Empty(panel.Row(row).Children.OfType<TextBlock>());
+        Assert.Equal(Visibility.Collapsed,panel.Actions(row).Visibility);Assert.Equal(Visibility.Collapsed,panel.Tools(row).Visibility);
         // Only one editor at a time and other rows are untouched.
         Assert.Single(Enumerable.Range(0,panel.Rows.Children.Count),i=>panel.Editor(i) is not null);
 
@@ -95,7 +111,7 @@ public sealed class TodoEditTests
         var after=panel.Db.ListTodo();
         Assert.Equal(item with{Text="改过的合成事项"},after[5]);
         Assert.Equal(before.Where(x=>x.Id!=id),after.Where(x=>x.Id!=id));
-        Assert.Null(panel.Editor(5));Assert.Equal("改过的合成事项",panel.Row(5).Children.OfType<TextBlock>().Single().Text);
+        Assert.Null(panel.Editor(row));Assert.Equal("改过的合成事项",panel.Row(row).Children.OfType<TextBlock>().Single().Text);
         Assert.Null(panel.Field<long?>("_todoEditingId"));Assert.Equal(0,panel.Undo.Count);
         var reopened=new LocalDatabase(panel.File);reopened.Initialize();Assert.Equal(after,reopened.ListTodo());
         Assert.Equal(338,panel.Settings.MonitorLeft);Assert.Equal(500,panel.Settings.MonitorTop);
@@ -105,12 +121,12 @@ public sealed class TodoEditTests
     public Task EscapeBlankAndUnchangedEditsLeaveTheItemAlone()=>TodoTopTests.OnSta(panel=>
     {
         var before=panel.Db.ListTodo();
-        Click(panel.Button(2,"编辑"));var editor=panel.Editor(2)!;editor.Text="不该保存";TodoTopTests.TodoPanel.Press(editor,Key.Escape);
+        OpenEditor(panel,2);var editor=panel.Editor(2)!;editor.Text="不该保存";TodoTopTests.TodoPanel.Press(editor,Key.Escape);
         Assert.Null(panel.Editor(2));Assert.Equal(before,panel.Db.ListTodo());
         // Clearing the box is a cancel, never a delete: deletion stays on ✕ where it can be undone.
-        Click(panel.Button(2,"编辑"));editor=panel.Editor(2)!;editor.Text="   ";TodoTopTests.TodoPanel.Press(editor,Key.Enter);
+        OpenEditor(panel,2);editor=panel.Editor(2)!;editor.Text="   ";TodoTopTests.TodoPanel.Press(editor,Key.Enter);
         Assert.Null(panel.Editor(2));Assert.Equal(before,panel.Db.ListTodo());
-        Click(panel.Button(2,"编辑"));TodoTopTests.TodoPanel.Press(panel.Editor(2)!,Key.Enter);Assert.Equal(before,panel.Db.ListTodo());
+        OpenEditor(panel,2);TodoTopTests.TodoPanel.Press(panel.Editor(2)!,Key.Enter);Assert.Equal(before,panel.Db.ListTodo());
     });
 
     [Fact]
@@ -126,7 +142,7 @@ public sealed class TodoEditTests
     public Task DraftSurvivesRebuildsFollowsTheItemAndStaleEditorCannotCommit()=>TodoTopTests.OnSta(panel=>
     {
         var before=panel.Db.ListTodo();var id=before[3].Id;
-        Click(panel.Button(3,"编辑"));var stale=panel.Editor(3)!;stale.Text="还没保存的草稿";
+        OpenEditor(panel,3);var stale=panel.Editor(3)!;stale.Text="还没保存的草稿";
         // Ticking another row rebuilds the whole list; the draft must come along and nothing is written yet.
         ((Grid)panel.Rows.Children[8]).Children.OfType<CheckBox>().Single().IsChecked=true;
         Assert.True(panel.Db.ListTodo()[8].IsDone);Assert.Equal(before[3].Text,panel.Db.ListTodo()[3].Text);
@@ -135,7 +151,7 @@ public sealed class TodoEditTests
         TodoTopTests.TodoPanel.LoseFocus(stale);Assert.Equal(before[3].Text,panel.Db.ListTodo()[3].Text);Assert.NotNull(panel.Editor(3));
 
         panel.Db.ReorderTodo(panel.Db.ListTodo().Select(x=>x.Id).Reverse().ToArray());panel.Refresh();
-        var index=panel.Db.ListTodo().ToList().FindIndex(x=>x.Id==id);Assert.Equal(8,index);
+        var index=panel.Index(id);Assert.Equal(7,index);
         var moved=panel.Editor(index);Assert.NotNull(moved);Assert.Equal("还没保存的草稿",moved.Text);
         TodoTopTests.TodoPanel.Press(moved,Key.Enter);
         Assert.Equal("还没保存的草稿",panel.Db.ListTodo().Single(x=>x.Id==id).Text);
@@ -146,7 +162,7 @@ public sealed class TodoEditTests
     public Task EditingAnotherRowSavesTheFirstAndDeletedItemIsNeverWrittenBack()=>TodoTopTests.OnSta(panel=>
     {
         var first=panel.Db.ListTodo()[1].Id;var second=panel.Db.ListTodo()[6].Id;
-        Click(panel.Button(1,"编辑"));panel.Editor(1)!.Text="第一条改好";Click(panel.Button(6,"编辑"));
+        OpenEditor(panel,1);panel.Editor(1)!.Text="第一条改好";OpenEditor(panel,6);
         Assert.Equal("第一条改好",panel.Db.ListTodo().Single(x=>x.Id==first).Text);
         Assert.Null(panel.Editor(1));Assert.NotNull(panel.Editor(6));
 
@@ -154,7 +170,7 @@ public sealed class TodoEditTests
         TodoTopTests.TodoPanel.Press(panel.Editor(6)!,Key.Enter);
         Assert.Equal(remaining,panel.Db.ListTodo());Assert.DoesNotContain(panel.Db.ListTodo(),x=>x.Text=="不应写回");
 
-        var third=panel.Db.ListTodo()[4].Id;Click(panel.Button(4,"编辑"));panel.Db.DeleteTodo(third);panel.Refresh();
+        var third=panel.Db.ListTodo()[4].Id;OpenEditor(panel,4);panel.Db.DeleteTodo(third);panel.Refresh();
         Assert.Null(panel.Field<long?>("_todoEditingId"));
         Assert.All(Enumerable.Range(0,panel.Rows.Children.Count),i=>Assert.Null(panel.Editor(i)));
     });
@@ -179,9 +195,14 @@ public sealed class TodoEditTests
         Save("default");
         var height=panel.Row(2).ActualHeight;
         panel.Hover(2);panel.Layout();panel.AssertRowLayout(2);Assert.Equal(height,panel.Row(2).ActualHeight);Save("hover");
+        var row=panel.Row(2);var bold=panel.Button(2,"加粗");
+        Assert.Same(bold,panel.Actions(2).Children[0]);Assert.Equal(Visibility.Collapsed,panel.Tools(2).Visibility);
+        Click(bold);Assert.True(panel.ItemAt(2).IsBold);Assert.Same(row,panel.Row(2));
+        Assert.Equal(Visibility.Collapsed,panel.Tools(2).Visibility);
         panel.Hover(2,false);Click(panel.Button(2,"更多"));panel.Layout();panel.AssertRowLayout(2);
+        Assert.Same(panel.Button(2,"编辑"),panel.Tools(2).Children[0]);
         Assert.True(panel.Row(2).ActualHeight>height);Save("tools");
-        Click(panel.Button(5,"编辑"));panel.Layout();
+        OpenEditor(panel,5);panel.Layout();
         var editor=panel.Editor(5)!;Assert.True(editor.ActualWidth>=180);
         Assert.True(editor.TranslatePoint(new Point(editor.ActualWidth,0),panel.Root).X<=262);
         Assert.Empty(OpenToolsRows(panel));Save("editing");

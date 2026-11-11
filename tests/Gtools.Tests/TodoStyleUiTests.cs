@@ -14,7 +14,7 @@ public sealed class TodoStyleUiTests
     private static void Click(Button button)=>button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
     private static void Color(TodoTopTests.TodoPanel panel,int row,TodoTextColor color)
     {
-        var palette=panel.Palette(panel.Db.ListTodo()[row].Id);
+        var palette=panel.Palette(panel.IdAt(row));
         Click(((UniformGrid)palette.Child).Children.OfType<Button>().Single(x=>Equals(x.Tag,color)));
     }
 
@@ -35,35 +35,38 @@ public sealed class TodoStyleUiTests
     [Theory][InlineData(MonitorTheme.Light)][InlineData(MonitorTheme.Dark)]
     public Task PaletteAppliesEveryColorAndCompletedTextKeepsStyle(MonitorTheme theme)=>TodoTopTests.OnSta(panel=>
     {
-        Click(panel.Button(1,"加粗"));Click(panel.Button(1,"倾斜"));
+        var id=panel.IdAt(1);panel.Db.SetTodoDone(id,true);panel.Refresh();var row=panel.Index(id);
+        Click(panel.Button(row,"加粗"));Click(panel.Button(row,"倾斜"));
         var defaultColor=((SolidColorBrush)Text(panel,0).Foreground).Color;
         var distinct=new HashSet<System.Windows.Media.Color>();
         foreach(var color in Enum.GetValues<TodoTextColor>())
         {
-            Color(panel,1,color);var item=panel.Db.ListTodo()[1];var text=Text(panel,1);
+            Color(panel,row,color);var item=panel.ItemAt(row);var text=Text(panel,row);
             Assert.Equal(color,item.TextColor);Assert.True(item.IsBold);Assert.True(item.IsItalic);
             Assert.Equal(.65,text.Opacity);Assert.Equal(TextDecorations.Strikethrough,text.TextDecorations);
             Assert.Equal(FontWeights.Bold,text.FontWeight);Assert.Equal(FontStyles.Italic,text.FontStyle);
             var brush=(SolidColorBrush)text.Foreground;distinct.Add(brush.Color);
-            Assert.Equal(brush.Color,((SolidColorBrush)panel.Button(1,"文字颜色").Foreground).Color);
+            Assert.Equal(brush.Color,((SolidColorBrush)panel.Button(row,"文字颜色").Foreground).Color);
             var palette=panel.Palette(item.Id);var buttons=((UniformGrid)palette.Child).Children.OfType<Button>().ToArray();
             Assert.Equal(6,buttons.Length);Assert.Equal(new Thickness(2),buttons.Single(x=>Equals(x.Tag,color)).BorderThickness);
         }
-        Assert.Equal(6,distinct.Count);Color(panel,1,TodoTextColor.Default);Assert.Equal(defaultColor,((SolidColorBrush)Text(panel,1).Foreground).Color);
-        var check=((Grid)panel.Rows.Children[1]).Children.OfType<CheckBox>().Single();check.IsChecked=false;
-        Assert.Equal(1,Text(panel,1).Opacity);Assert.Null(Text(panel,1).TextDecorations);
-        Assert.True(panel.Db.ListTodo()[1].IsBold);Assert.True(panel.Db.ListTodo()[1].IsItalic);
+        Assert.Equal(6,distinct.Count);Color(panel,row,TodoTextColor.Default);Assert.Equal(defaultColor,((SolidColorBrush)Text(panel,row).Foreground).Color);
+        var check=panel.Row(row).Children.OfType<CheckBox>().Single();check.IsChecked=false;
+        row=panel.Index(id);Assert.Equal(1,Text(panel,row).Opacity);Assert.Null(Text(panel,row).TextDecorations);
+        Assert.True(panel.ItemAt(row).IsBold);Assert.True(panel.ItemAt(row).IsItalic);
     },theme);
 
     [Fact]
     public Task StyledItemSupportsTopMoveDeleteUndoAndRestart()=>TodoTopTests.OnSta(panel=>
     {
-        Click(panel.Button(5,"加粗"));Click(panel.Button(5,"倾斜"));Color(panel,5,TodoTextColor.Purple);
-        var target=panel.Db.ListTodo()[5];Click(panel.Button(5,"一键置顶"));Click(panel.Button(0,"下移"));Click(panel.Button(1,"上移"));
-        var moved=panel.Db.ListTodo()[0];Assert.Equal(target with{SortOrder=moved.SortOrder},moved);
-        Click(panel.Button(0,"删除"));Click(panel.UndoButton);Assert.Equal(moved,panel.Db.ListTodo()[0]);
-        var reopened=new LocalDatabase(panel.File);reopened.Initialize();Assert.Equal(moved,reopened.ListTodo()[0]);
-        Assert.Equal(FontWeights.Bold,Text(panel,0).FontWeight);Assert.Equal(FontStyles.Italic,Text(panel,0).FontStyle);
+        var id=panel.IdAt(5);var peer=panel.Db.AddTodo("合成紫色",TodoTextColor.Purple);panel.Refresh();
+        Click(panel.Button(panel.Index(id),"加粗"));Click(panel.Button(panel.Index(id),"倾斜"));Color(panel,panel.Index(id),TodoTextColor.Purple);
+        var target=panel.ItemAt(panel.Index(id));Assert.True(panel.Drop(id,peer,true));
+        Click(panel.Button(panel.Index(id),"一键置顶"));Assert.True(panel.Index(id)<panel.Index(peer));
+        var moved=panel.ItemAt(panel.Index(id));Assert.Equal(target with{SortOrder=moved.SortOrder},moved);
+        Click(panel.Button(panel.Index(id),"删除"));Click(panel.UndoButton);Assert.Equal(moved,panel.ItemAt(panel.Index(id)));
+        var reopened=new LocalDatabase(panel.File);reopened.Initialize();Assert.Equal(moved,reopened.ListTodo().Single(x=>x.Id==id));
+        Assert.Equal(FontWeights.Bold,Text(panel,panel.Index(id)).FontWeight);Assert.Equal(FontStyles.Italic,Text(panel,panel.Index(id)).FontStyle);
     });
 
     [Fact]
@@ -88,7 +91,7 @@ public sealed class TodoStyleUiTests
         for(var rowIndex=0;rowIndex<items.Count;rowIndex++)
         {
             // Collapsed by default: the styled text gets the whole row (previously ~100px beside seven buttons).
-            Assert.Equal(9,panel.Buttons(rowIndex).Length);Assert.True(Text(panel,rowIndex).ActualWidth>=180);
+            Assert.Equal(7,panel.Buttons(rowIndex).Length);Assert.True(Text(panel,rowIndex).ActualWidth>=180);
             panel.AssertRowLayout(rowIndex);
             Click(panel.Button(rowIndex,"更多"));panel.Layout();
             Assert.Equal(Visibility.Visible,panel.Tools(rowIndex).Visibility);Assert.True(Text(panel,rowIndex).ActualWidth>=140);

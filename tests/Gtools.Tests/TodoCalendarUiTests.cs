@@ -24,7 +24,7 @@ public sealed class TodoCalendarUiTests
         await TodoTopTests.OnSta(panel=>
         {
             var label=panel.Field<TextBlock>("_todoCalendar");Assert.Equal("九月初六·Thu.",label.Text);
-            Assert.Equal("10项",panel.Field<TextBlock>("_todoCount").Text);Assert.Equal("10 项未完成",panel.Field<TextBlock>("_todoCount").ToolTip);
+            Assert.Equal("12项",panel.Field<TextBlock>("_todoCount").Text);Assert.Equal("12 项未完成",panel.Field<TextBlock>("_todoCount").ToolTip);
             var rows=panel.Rows.Children.Cast<object>().ToArray();var before=panel.Db.ListTodo();
             panel.Scroll.ScrollToBottom();panel.Layout();var offset=panel.Scroll.VerticalOffset;
             panel.Invoke("SetCalendarVisible",true);

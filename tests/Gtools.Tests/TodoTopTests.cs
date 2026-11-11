@@ -18,10 +18,10 @@ public sealed class TodoTopTests
         var before=panel.Db.ListTodo();var target=before[index];
         var oldWidth=panel.Window.Width;var oldLeft=panel.Settings.MonitorLeft;var oldTop=panel.Settings.MonitorTop;
         panel.Scroll.ScrollToBottom();panel.Layout();Assert.True(panel.Scroll.VerticalOffset>0);
-        var buttons=panel.Buttons(index);Assert.Equal(new[]{"编辑","更多","删除","加粗","倾斜","文字颜色","一键置顶","上移","下移"},buttons.Select(b=>b.ToolTip));
-        panel.Button(index,"一键置顶").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));panel.Layout();
+        var buttons=panel.Buttons(index);Assert.Equal(new[]{"加粗","更多","删除","编辑","倾斜","文字颜色","一键置顶"},buttons.Select(b=>b.ToolTip));
+        panel.Button(index,"一键置顶").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));panel.Drain();panel.Layout();
         var expected=new[]{target.Id}.Concat(before.Where(x=>x.Id!=target.Id).Select(x=>x.Id));
-        Assert.Equal(expected,panel.Db.ListTodo().Select(x=>x.Id));Assert.Equal(0,panel.Scroll.VerticalOffset);
+        Assert.Equal(expected,panel.Db.ListTodo().Select(x=>x.Id));Assert.InRange(panel.Scroll.VerticalOffset,0,1);
         Assert.Equal(target.Text,panel.FirstText());
         foreach(var item in panel.Db.ListTodo())Assert.Equal(before.Single(x=>x.Id==item.Id) with{SortOrder=item.SortOrder},item);
         Assert.Equal(0,panel.Undo.Count);Assert.Equal(oldWidth,panel.Window.Width);
@@ -30,8 +30,9 @@ public sealed class TodoTopTests
         var disabled=panel.Button(0,"一键置顶");Assert.False(disabled.IsHitTestVisible);Assert.Equal(.25,disabled.Opacity);
         disabled.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.Equal(expected,panel.Db.ListTodo().Select(x=>x.Id));
         // Top is an ordinary sort operation: moving down and then up still works.
-        panel.Button(0,"下移").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.Equal(target.Id,panel.Db.ListTodo()[1].Id);
-        panel.Button(1,"上移").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Assert.Equal(target.Id,panel.Db.ListTodo()[0].Id);
+        var neighbor=panel.ItemAt(1).Id;
+        Assert.True(panel.Drop(target.Id,neighbor,true));Assert.Equal(target.Id,panel.ItemAt(1).Id);
+        Assert.True(panel.Drop(target.Id,neighbor,false));Assert.Equal(target.Id,panel.ItemAt(0).Id);
         var moved=panel.Db.ListTodo()[0];panel.Button(0,"删除").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.DoesNotContain(panel.Db.ListTodo(),x=>x.Id==target.Id);Assert.Equal(1,panel.Undo.Count);
         panel.UndoButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -58,7 +59,7 @@ public sealed class TodoTopTests
         VisualTreeHelper.SetRootDpi(panel.Root,new DpiScale(scale,scale));
         panel.Button(1,"更多").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));panel.Layout();
         Assert.Equal(Visibility.Visible,panel.Tools(1).Visibility);panel.AssertRowLayout(1);
-        var top=panel.Button(1,"一键置顶");Assert.Equal("⤒",top.Content);Assert.Equal("一键置顶",System.Windows.Automation.AutomationProperties.GetName(top));
+        var top=panel.Button(1,"一键置顶");Assert.Equal("⤒",top.Content);Assert.Equal("置顶到同色组首",System.Windows.Automation.AutomationProperties.GetName(top));
         var destination=Environment.GetEnvironmentVariable("GTOOLS_TODO_PREVIEW_ROOT");
         if(!string.IsNullOrWhiteSpace(destination))
         {
@@ -93,7 +94,9 @@ public sealed class TodoTopTests
         private readonly string _root=Path.Combine(Path.GetTempPath(),"Gtools.Tests",Guid.NewGuid().ToString("N"));
         public string File=>Path.Combine(_root,"todo.db");
         public LocalDatabase Db{get;}
-        public GtoolsSettings Settings{get;}=new(){TodoVisibleRows=3,MonitorLeft=338,MonitorTop=500};
+        public SettingsStore Store{get;}
+        public GtoolsSettings Settings=>Store.Current;
+        public string SettingsFile=>Path.Combine(_root,"settings.json");
         public FloatingDockWindow Window{get;}
         public StackPanel Root{get;}
         public StackPanel Rows=>Field<StackPanel>("_todoRows");
@@ -102,18 +105,37 @@ public sealed class TodoTopTests
         public Button UndoButton=>Field<Button>("_undoButton");
         public TodoPanel(MonitorTheme theme=MonitorTheme.Light,Func<DateTime>? today=null)
         {
-            Settings.MonitorTheme=theme;
+            Store=new SettingsStore(SettingsFile);Settings.MonitorTheme=theme;
+            Settings.TodoVisibleRows=3;Settings.MonitorLeft=338;Settings.MonitorTop=500;
+            Settings.TodoColorGroupOrder=TodoBoardOrder.Groups(null,[]).Select(x=>(int)x).ToArray();
             Db=new LocalDatabase(File);Db.Initialize();
-            for(var i=0;i<12;i++){var id=Db.AddTodo($"合成事项 {i+1:00}");if(i is 1 or 11)Db.SetTodoDone(id,true);}
-            Window=new FloatingDockWindow(Settings,new SettingsStore(),Db,today);Root=(StackPanel)Window.Content;Window.Content=null;
+            for(var i=0;i<12;i++)Db.AddTodo($"合成事项 {i+1:00}");
+            Window=new FloatingDockWindow(Settings,Store,Db,today);Root=(StackPanel)Window.Content;Window.Content=null;
             Field<Border>("_todoBlock").Visibility=Visibility.Visible;
             typeof(FloatingDockWindow).GetMethod("RefreshTodo",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(Window,null);
             Layout();
         }
         public T Field<T>(string name)=>(T)typeof(FloatingDockWindow).GetField(name,BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(Window)!;
-        public void Invoke(string name,params object[] args)=>typeof(FloatingDockWindow).GetMethod(name,BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(Window,args);
+        public object? Invoke(string name,params object[] args)=>typeof(FloatingDockWindow).GetMethod(name,BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(Window,args);
         // A row holds two button groups: the hover strip (编辑/更多/删除) and the collapsible tool line below it.
         public Grid Row(int row)=>(Grid)Rows.Children[row];
+        public long IdAt(int row)=>(long)Row(row).Tag;
+        public int Index(long id)=>Enumerable.Range(0,Rows.Children.Count).Single(i=>IdAt(i)==id);
+        public TodoItem ItemAt(int row)=>Db.ListTodo().Single(x=>x.Id==IdAt(row));
+        public bool Drop(long source,long target,bool after)
+        {
+            var items=Db.ListTodo();return (bool)Invoke("ApplyTodoDropById",items.Single(x=>x.Id==source),items.Single(x=>x.Id==target),after)!;
+        }
+        public void Drain()
+        {
+            var frame=new DispatcherFrame();Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.ContextIdle,()=>frame.Continue=false);
+            Dispatcher.PushFrame(frame);
+        }
+        public GtoolsSettings ReadSavedSettings()
+        {
+            Store.SaveAsync().GetAwaiter().GetResult();
+            var reopened=new SettingsStore(SettingsFile);reopened.LoadAsync().GetAwaiter().GetResult();return reopened.Current;
+        }
         public StackPanel Actions(int row)=>Row(row).Children.OfType<StackPanel>().First();
         public StackPanel Tools(int row)=>Row(row).Children.OfType<StackPanel>().Last();
         public Button[] Buttons(int row)=>Row(row).Children.OfType<StackPanel>().SelectMany(p=>p.Children.OfType<Button>()).ToArray();
@@ -134,7 +156,7 @@ public sealed class TodoTopTests
             typeof(System.Windows.Input.MouseButtonEventArgs).GetProperty("ClickCount")!.SetValue(args,clickCount);
             Row(row).Children.OfType<TextBlock>().Single().RaiseEvent(args);
         }
-        // Visible groups keep 17px buttons in order inside the 262px dock; text never runs under the hover strip,
+        // Visible groups keep buttons in order inside the 262 DIP dock; text never runs under the hover strip,
         // and the tool line sits below the text line instead of squeezing it.
         public void AssertRowLayout(int index)
         {
@@ -149,9 +171,10 @@ public sealed class TodoTopTests
                 var buttons=group.Children.OfType<Button>().ToArray();
                 for(var i=0;i<buttons.Length;i++)
                 {
-                    Assert.Equal(17,buttons[i].ActualWidth);Assert.Equal(17,buttons[i].ActualHeight);
-                    if(i>0)Assert.True(buttons[i-1].TranslatePoint(new Point(17,0),row).X<=buttons[i].TranslatePoint(new Point(),row).X);
-                    Assert.True(buttons[i].TranslatePoint(new Point(17,0),Root).X<=262);
+                    var toggle=System.Windows.Automation.AutomationProperties.GetAutomationId(buttons[i])=="TodoToolsToggle";
+                    Assert.Equal(toggle?28:17,buttons[i].ActualWidth);Assert.Equal(toggle?21:17,buttons[i].ActualHeight);
+                    if(i>0)Assert.True(buttons[i-1].TranslatePoint(new Point(buttons[i-1].ActualWidth,0),row).X<=buttons[i].TranslatePoint(new Point(),row).X);
+                    Assert.True(buttons[i].TranslatePoint(new Point(buttons[i].ActualWidth,0),Root).X<=262);
                 }
             }
         }
@@ -169,6 +192,7 @@ public sealed class TodoTopTests
         {
             Invoke("DisposeTodoCalendar");
             Field<DispatcherTimer>("_noticeTimer").Stop();Field<DispatcherTimer>("_timer").Stop();
+            Field<DispatcherTimer>("_todoDragScroll").Stop();
             Field<DesktopLayerHost>("_desktopLayer").Dispose();Directory.Delete(_root,true);
         }
     }

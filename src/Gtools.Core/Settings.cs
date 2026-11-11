@@ -33,28 +33,37 @@ public sealed class GtoolsSettings
     public bool TodoEnabled { get; set; } = true;
     public bool TodoExpanded { get; set; } = true;
     public int TodoVisibleRows { get; set; } = 6;
+    public int[]? TodoColorGroupOrder { get; set; }
 }
 
-public sealed class SettingsStore
+public sealed class SettingsStore(string? settingsFile = null)
 {
+    private readonly SemaphoreSlim _saveGate = new(1, 1);
+    private string FilePath => settingsFile ?? AppPaths.SettingsFile;
     public GtoolsSettings Current { get; private set; } = new();
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        AppPaths.EnsureAll();
-        if (!File.Exists(AppPaths.SettingsFile)) return;
+        if (settingsFile is null) AppPaths.EnsureAll();
+        if (!File.Exists(FilePath)) return;
         try
         {
-            await using var stream = File.OpenRead(AppPaths.SettingsFile);
-            Current = await JsonSerializer.DeserializeAsync<GtoolsSettings>(stream, GtoolsJson.Options, cancellationToken) ?? new();
+            using var stream = File.OpenRead(FilePath);
+            Current = await JsonSerializer.DeserializeAsync<GtoolsSettings>(stream, GtoolsJson.Options, cancellationToken).ConfigureAwait(false) ?? new();
         }
         catch { Current = new(); }
     }
     public async Task SaveAsync(CancellationToken cancellationToken = default)
     {
-        AppPaths.EnsureAll();
-        var temp = AppPaths.SettingsFile + ".tmp";
-        await using (var stream = File.Create(temp))
-            await JsonSerializer.SerializeAsync(stream, Current, GtoolsJson.Options, cancellationToken);
-        File.Move(temp, AppPaths.SettingsFile, true);
+        await _saveGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (settingsFile is null) AppPaths.EnsureAll();
+            else Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(FilePath))!);
+            var temp = FilePath + ".tmp";
+            using (var stream = File.Create(temp))
+                await JsonSerializer.SerializeAsync(stream, Current, GtoolsJson.Options, cancellationToken).ConfigureAwait(false);
+            File.Move(temp, FilePath, true);
+        }
+        finally { _saveGate.Release(); }
     }
 }
