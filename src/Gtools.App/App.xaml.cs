@@ -27,10 +27,32 @@ public partial class App : System.Windows.Application
     private readonly DictionaryService _dictionary=new();
     private readonly GoogleWebTranslationProvider _googleTranslation=new();
     private readonly YoudaoWebTranslationProvider _youdaoTranslation=new();
+    private OpenAiTranslationProvider? _openAiTranslation;
+    private TranslationRouter? _translationRouter;
+    private bool _ocrBusy;
+    private string? _lastUnhandledMessage;
+    private long _lastUnhandledAt;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        // 这是常驻托盘的程序，还托管着待办和流量条：某个按钮回调里的一次意外（比如剪贴板正被别的程序占用）
+        // 不该让整个进程退出。记录下来、提示一句，然后继续运行。
+        DispatcherUnhandledException+=(_,args)=>
+        {
+            DiagnosticLog.Write("app","unhandled",args.Exception.ToString(),"Error");
+            // 自动验收必须如实失败，不能被兜底掩盖。
+            if(_runtime.SelfTest)return;
+            args.Handled=true;
+            if(_exiting)return;
+            // 同一个错误连续出现（例如来自每秒一次的定时器）时只提示一次，避免提示刷屏。
+            var now=Environment.TickCount64;var message=args.Exception.Message;
+            if(message==_lastUnhandledMessage&&now-_lastUnhandledAt<30_000)return;
+            _lastUnhandledMessage=message;_lastUnhandledAt=now;
+            var detail=args.Exception.ToString();
+            try{new ToastWindow("操作没有完成："+message,()=>MessageBox.Show(detail,"Gtools")).Show();}catch{}
+        };
+        TaskScheduler.UnobservedTaskException+=(_,args)=>{DiagnosticLog.Write("app","unobserved",args.Exception.ToString(),"Warning");args.SetObserved();};
         try
         {
             _runtime=AppRuntimeOptions.Parse(e.Args);
@@ -112,30 +134,32 @@ public partial class App : System.Windows.Application
 
     private async Task RunOcrAsync(bool translate)
     {
+        // 框选遮罩还开着、或上一张图还在识别时再按一次热键，不叠第二层遮罩。
+        if(_ocrBusy)return;
+        _ocrBusy=true;
         try
         {
             var png=await ScreenCaptureService.SelectAndCaptureAsync();if(png is null)return;ShowToast("正在准备本地 OCR…首次使用可能需要更久");
             var result=await _ocr.RecognizeAsync(png);if(!result.Success)throw new InvalidOperationException(result.Error??"OCR 失败");
-            if(!translate){if(!string.IsNullOrWhiteSpace(result.Text))Clipboard.SetText(result.Text);ShowToast("OCR 已复制，点击校对",()=>new OcrEditorWindow(result.Text).Show());return;}
+            if(!translate){var copied=Ui.CopyText(result.Text);ShowToast(copied?"OCR 已复制，点击校对":"OCR 完成，点击查看",()=>new OcrEditorWindow(result.Text).Show());return;}
             if(string.IsNullOrWhiteSpace(result.Text))throw new InvalidOperationException("没有识别到文字。");
-            var (sl,tl)=LanguageDetector.DetectPair(result.Text);
+            // OCR 一行一条；折行的句子逐行送去翻译会被拆散，先按版面还原成段落。
+            var text=OcrTextLayout.Reflow(result.Regions,result.Text);
+            var (sl,tl)=LanguageDetector.DetectPair(text);
             // OCR 完成就先打开结果窗；Google/网络失败由窗口内联处理，原文不会随一条错误提示一起消失。
-            new TranslationWindow(result.Text,sl,tl,TranslateAsync,CompareProvidersAsync,SaveWord).Show();
+            new TranslationWindow(text,sl,tl,TranslateAsync,CompareProvidersAsync,SaveWord,result.Text,()=>Router().HasApiKey).Show();
         }
         catch(Exception ex){DiagnosticLog.Write("ocr",translate?"translate.failed":"recognize.failed",ex.Message,"Error");ShowToast("操作失败："+ex.Message,()=>MessageBox.Show(ex.ToString(),"Gtools"));}
+        finally{_ocrBusy=false;}
     }
     private ITranslationProvider CreateProvider(string id)=>id switch
     {
-        "openai-compatible"=>new OpenAiTranslationProvider(_settings.Current),
+        OpenAiTranslationProvider.ProviderId=>_openAiTranslation??=new OpenAiTranslationProvider(_settings.Current),
         "youdao-web"=>_youdaoTranslation,
         _=>_googleTranslation
     };
-    private Task<TranslationResult> TranslateAsync(string text,string sl,string tl,string mode)
-    {
-        if(mode=="google-web-recheck")return _googleTranslation.TranslateAfterNetworkChangeAsync(new TranslationRequest(text,sl,tl,_settings.Current.OpenAiPrompt));
-        var id=mode=="default"||string.IsNullOrWhiteSpace(mode)?_settings.Current.TranslationProvider:mode;
-        return CreateProvider(id).TranslateAsync(new TranslationRequest(text,sl,tl,_settings.Current.OpenAiPrompt));
-    }
+    private TranslationRouter Router()=>_translationRouter??=new TranslationRouter(_settings.Current,CreateProvider,_googleTranslation.TranslateAfterNetworkChangeAsync);
+    private Task<TranslationResult> TranslateAsync(string text,string sl,string tl,string mode)=>Router().TranslateAsync(text,sl,tl,mode);
     /// <summary>免密钥通道全都跑；OpenAI 只有配置了 Key 才参与，避免每次对照都弹一条报错。</summary>
     private async Task<IReadOnlyList<ProviderOutcome>> CompareProvidersAsync(string text,string sl,string tl)
     {
@@ -149,6 +173,16 @@ public partial class App : System.Windows.Application
             catch(Exception ex){return new ProviderOutcome(provider.DisplayName,"",TimeSpan.Zero,ex.Message);}
         });
         return await Task.WhenAll(tasks);
+    }
+    /// <summary>
+    /// 用设置窗口里当前填写（可能还没保存）的地址、模型和 Key 发一句固定的合成文字，
+    /// 让用户填完就能知道这组配置能不能用。不读取 OCR、剪贴板或生词内容。
+    /// </summary>
+    private static async Task<string> TestAiInterfaceAsync(GtoolsSettings candidate,CancellationToken token)
+    {
+        using var provider=new OpenAiTranslationProvider(candidate);
+        var result=await provider.TranslateAsync(new TranslationRequest("Gtools connectivity test","en","zh-CN",candidate.OpenAiPrompt),token);
+        return $"AI 接口可用 · {candidate.OpenAiModel} · {result.Elapsed.TotalSeconds:0.0}s · 译文：{result.Text}";
     }
     private async void SaveWord(string word,string meaning,string context)
     {
@@ -195,7 +229,7 @@ public partial class App : System.Windows.Application
         var previous=NativeMethods.GetForegroundWindow();var window=new ClipboardWindow(_db,_clipboard!,previous);_clipboardWindow=window;
         window.Closed+=(_,_)=>{if(ReferenceEquals(_clipboardWindow,window))_clipboardWindow=null;};window.Show();window.Activate();
     }
-    private void ShowSettings(){var w=new SettingsWindow(_settings.Current,_settings,_googleTranslation.TestConnectionAsync);w.SettingsChanged+=async(_,_)=>{ApplyStartup();await ApplyModulesAsync();_dashboard?.Refresh(_settings.Current);await RefreshHealthAsync();};w.ShowDialog();}
+    private void ShowSettings(){var w=new SettingsWindow(_settings.Current,_settings,_googleTranslation.TestConnectionAsync,TestAiInterfaceAsync);w.SettingsChanged+=async(_,_)=>{ApplyStartup();await ApplyModulesAsync();_dashboard?.Refresh(_settings.Current);await RefreshHealthAsync();};w.ShowDialog();}
     private void ShowDiagnostics(){new DiagnosticsWindow(AppPaths.Root,DiagnosticLog.CurrentPath,()=>_modules.GetHealthAsync()).Show();}
     private void ShowToast(string text,Action? click=null)=>Dispatcher.Invoke(()=>new ToastWindow(text,click).Show());
     private async Task ShowHealthAsync(){var statuses=await _modules.GetHealthAsync();var lines=_modules.Modules.Select(m=>$"{Icon(statuses[m.Id].Health)} {m.DisplayName}：{statuses[m.Id].Message}");MessageBox.Show(string.Join(Environment.NewLine,lines),"Gtools · 模块健康状态");}
@@ -215,7 +249,7 @@ public partial class App : System.Windows.Application
             var drained=await _clipboard.StopAsync();
             if(!drained)MessageBox.Show(_clipboard.State.LastError??"部分剪贴板记录未能保存。","Gtools · 剪贴板保存提示",MessageBoxButton.OK,MessageBoxImage.Warning);
         }
-        try{await _modules.DisposeAsync();}catch{}if(_tray is not null){_tray.Visible=false;_tray.Dispose();}_clipboard?.Dispose();_hotkeys?.Dispose();_googleTranslation.Dispose();_dock?.Close();ReleaseMutex();Shutdown();
+        try{await _modules.DisposeAsync();}catch{}if(_tray is not null){_tray.Visible=false;_tray.Dispose();}_clipboard?.Dispose();_hotkeys?.Dispose();_googleTranslation.Dispose();_openAiTranslation?.Dispose();_dock?.Close();ReleaseMutex();Shutdown();
     }
     private void ReleaseMutex(){try{_mutex?.ReleaseMutex();}catch{}finally{_mutex?.Dispose();_mutex=null;}}
     protected override void OnExit(ExitEventArgs e){try{if(_tray is not null)_tray.Visible=false;}catch{}try{_googleTranslation.Dispose();}catch{}DiagnosticLog.Write("app","exit","Gtools 已退出");ReleaseMutex();base.OnExit(e);}

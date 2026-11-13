@@ -57,6 +57,13 @@ internal sealed class OcrWorkerClient
             var response = await PipeJson.ReadAsync<TResponse>(pipe,cts.Token);
             await process.WaitForExitAsync(cts.Token);DiagnosticLog.Write(worker,"worker.completed",$"Worker 退出码 {process.ExitCode}",requestId:pipeName);return response ?? throw new InvalidDataException($"{worker} 返回空响应");
         }
+        catch(Exception ex) when(ex is EndOfStreamException or IOException&&!cts.IsCancellationRequested)
+        {
+            // Worker 崩溃时管道会先断开；“管道在消息完成前关闭”对用户没有意义，换成能照着做的说明。
+            var exit=process.HasExited?$"（退出码 {process.ExitCode}）":"";
+            await StopProcessAsync(process,worker,pipeName);
+            throw new InvalidOperationException($"{worker} 意外退出{exit}，没有返回结果。请重试；反复出现时请确认是从完整的程序目录启动的。",ex);
+        }
         catch
         {
             await StopProcessAsync(process,worker,pipeName);

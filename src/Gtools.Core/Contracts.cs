@@ -16,7 +16,8 @@ public interface IDesktopModule : IAsyncDisposable
 }
 
 public sealed record TranslationRequest(string Text, string SourceLanguage, string TargetLanguage, string? Prompt = null);
-public sealed record TranslationResult(string Provider, string Text, TimeSpan Elapsed, bool IsUnofficial = false);
+/// <param name="Note">译文不是由默认通道按常规路径给出时的一句说明（例如自动改用了备用通道），显示在翻译窗口顶部。</param>
+public sealed record TranslationResult(string Provider, string Text, TimeSpan Elapsed, bool IsUnofficial = false, string? Note = null);
 
 public interface ITranslationProvider
 {

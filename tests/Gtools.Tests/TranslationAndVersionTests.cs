@@ -120,74 +120,199 @@ public sealed class TranslationProviderTests
         Assert.Equal(2,sentAt.Count);Assert.True(sentAt[1]-sentAt[0]>=TimeSpan.FromMilliseconds(900));
     }
 
+    private const string Website="translate.google.com",Apis="translate.googleapis.com";
+    private static HttpResponseMessage Limited(TimeSpan? retryAfter=null)
+    {
+        var limited=new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+        if(retryAfter is {} wait)limited.Headers.RetryAfter=new RetryConditionHeaderValue(wait);
+        return limited;
+    }
+
     [Fact]
-    public async Task RateLimitCreatesCooldownAndBlocksRepeatedTrafficUntilUserChangesNetwork()
+    public async Task RateLimitedHostFailsOverToTheOtherGoogleHostAndIsSkippedWhileCooling()
+    {
+        var clock=new FakeClock();var hosts=new List<string>();
+        using var client=new HttpClient(new StubHandler(request=>
+        {
+            hosts.Add(request.RequestUri!.Host);
+            return request.RequestUri.Host==Website?Limited(TimeSpan.FromMinutes(2)):Success();
+        }));
+        using var provider=new GoogleWebTranslationProvider(client,clock.UtcNow,clock.Delay);
+
+        var first=await provider.TranslateAsync(new("rate-limited synthetic one","en","zh-CN"));
+        Assert.Equal("合成译文",first.Text);Assert.Equal(new[]{Website,Apis},hosts);
+        // One usable host means translation is not blocked, so there is no cooldown to report to the user.
+        Assert.Equal(TimeSpan.Zero,provider.CooldownRemaining());
+
+        hosts.Clear();await provider.TranslateAsync(new("rate-limited synthetic two","en","zh-CN"));
+        Assert.Equal(new[]{Apis},hosts);
+
+        hosts.Clear();clock.Advance(TimeSpan.FromMinutes(3));
+        await provider.TranslateAsync(new("rate-limited synthetic three","en","zh-CN"));
+        Assert.Equal(Website,hosts[0]);
+    }
+
+    [Fact]
+    public async Task BothHostsRateLimitedCreatesCooldownAndBlocksRepeatedTrafficUntilUserChangesNetwork()
     {
         var clock=new FakeClock();var calls=0;
-        using var client=new HttpClient(new StubHandler(_=>
-        {
-            calls++;if(calls==1){var limited=new HttpResponseMessage(HttpStatusCode.TooManyRequests);limited.Headers.RetryAfter=new RetryConditionHeaderValue(TimeSpan.FromMinutes(2));return limited;}
-            return Success();
-        }));
+        using var client=new HttpClient(new StubHandler(_=>++calls<=2?Limited(TimeSpan.FromMinutes(2)):Success()));
         using var provider=new GoogleWebTranslationProvider(client,clock.UtcNow,clock.Delay);
         var request=new TranslationRequest("rate-limited synthetic","en","zh-CN");
 
         var first=await Assert.ThrowsAsync<TranslationProviderException>(()=>provider.TranslateAsync(request));
         var blocked=await Assert.ThrowsAsync<TranslationProviderException>(()=>provider.TranslateAsync(request));
         Assert.Equal(TranslationFailureKind.TooManyRequests,first.Kind);Assert.Equal(TranslationFailureKind.TooManyRequests,blocked.Kind);
-        Assert.Equal(1,calls);Assert.Equal(TimeSpan.FromMinutes(2),provider.CooldownRemaining());
+        Assert.Contains("429",first.Message);Assert.Contains("秒后可重试",first.Message);
+        // Each host is asked once; while both cool down nothing more is sent.
+        Assert.Equal(2,calls);Assert.Equal(TimeSpan.FromMinutes(2),provider.CooldownRemaining());
 
         var recovered=await provider.TranslateAfterNetworkChangeAsync(request);
-        Assert.Equal("合成译文",recovered.Text);Assert.Equal(2,calls);
+        Assert.Equal("合成译文",recovered.Text);Assert.Equal(3,calls);
     }
 
     [Fact]
-    public async Task ForbiddenIsNotRetriedButServerFailureIsRetriedOnce()
+    public async Task ForbiddenAsksEachHostOnceAndServerFailureMovesToTheOtherHost()
     {
-        var clock=new FakeClock();var forbiddenCalls=0;
-        using(var forbiddenClient=new HttpClient(new StubHandler(_=>{forbiddenCalls++;return new(HttpStatusCode.Forbidden);})))
+        var clock=new FakeClock();var forbiddenHosts=new List<string>();
+        using(var forbiddenClient=new HttpClient(new StubHandler(request=>{forbiddenHosts.Add(request.RequestUri!.Host);return new(HttpStatusCode.Forbidden);})))
         using(var forbiddenProvider=new GoogleWebTranslationProvider(forbiddenClient,clock.UtcNow,clock.Delay))
         {
             var error=await Assert.ThrowsAsync<TranslationProviderException>(()=>forbiddenProvider.TranslateAsync(new("forbidden","en","zh-CN")));
-            Assert.Equal(TranslationFailureKind.Forbidden,error.Kind);Assert.Equal(1,forbiddenCalls);
+            Assert.Equal(TranslationFailureKind.Forbidden,error.Kind);Assert.Equal(new[]{Website,Apis},forbiddenHosts);
         }
 
-        var serverCalls=0;
-        using var serverClient=new HttpClient(new StubHandler(_=>++serverCalls==1?new(HttpStatusCode.ServiceUnavailable):Success()));
+        var serverHosts=new List<string>();
+        using var serverClient=new HttpClient(new StubHandler(request=>{serverHosts.Add(request.RequestUri!.Host);return serverHosts.Count==1?new(HttpStatusCode.ServiceUnavailable):Success();}));
         using var serverProvider=new GoogleWebTranslationProvider(serverClient,clock.UtcNow,clock.Delay);
         var result=await serverProvider.TranslateAsync(new("server retry","en","zh-CN"));
-        Assert.Equal("合成译文",result.Text);Assert.Equal(2,serverCalls);
+        Assert.Equal("合成译文",result.Text);Assert.Equal(new[]{Website,Apis},serverHosts);
     }
 
     [Fact]
-    public async Task TimeoutIsRetriedOnlyOnce()
+    public async Task TimeoutAsksEachHostOnlyOnce()
     {
-        var clock=new FakeClock();var calls=0;
-        using var client=new HttpClient(new AsyncStubHandler((_,_)=>{calls++;throw new TaskCanceledException("synthetic timeout");}));
+        var clock=new FakeClock();var hosts=new List<string>();
+        using var client=new HttpClient(new AsyncStubHandler((request,_)=>{hosts.Add(request.RequestUri!.Host);throw new TaskCanceledException("synthetic timeout");}));
         using var provider=new GoogleWebTranslationProvider(client,clock.UtcNow,clock.Delay);
 
         var error=await Assert.ThrowsAsync<TranslationProviderException>(()=>provider.TranslateAsync(new("timeout","en","zh-CN")));
 
-        Assert.Equal(TranslationFailureKind.Timeout,error.Kind);Assert.Equal(2,calls);
+        Assert.Equal(TranslationFailureKind.Timeout,error.Kind);Assert.Equal(new[]{Website,Apis},hosts);
     }
 
     [Fact]
-    public async Task ConnectionTestSendsOnlyFixedSyntheticTextAndCanProbeDuringCooldown()
+    public async Task ConnectionFailureMovesToTheOtherHost()
+    {
+        var clock=new FakeClock();var hosts=new List<string>();
+        using var client=new HttpClient(new StubHandler(request=>
+        {
+            hosts.Add(request.RequestUri!.Host);
+            return request.RequestUri.Host==Website?throw new HttpRequestException("synthetic connection reset"):Success();
+        }));
+        using var provider=new GoogleWebTranslationProvider(client,clock.UtcNow,clock.Delay);
+
+        var result=await provider.TranslateAsync(new("network","en","zh-CN"));
+
+        Assert.Equal("合成译文",result.Text);Assert.Equal(new[]{Website,Apis},hosts);
+    }
+
+    [Fact]
+    public async Task OnlyUsableHostRetriesATransientFailureOnceButNeverARejection()
+    {
+        var clock=new FakeClock();var apiCalls=0;var failApi=false;var rejectApi=false;
+        using var client=new HttpClient(new StubHandler(request=>
+        {
+            if(request.RequestUri!.Host==Website)return Limited(TimeSpan.FromMinutes(10));
+            apiCalls++;
+            if(rejectApi)return new(HttpStatusCode.Forbidden);
+            if(failApi){failApi=false;return new(HttpStatusCode.BadGateway);}
+            return Success();
+        }));
+        using var provider=new GoogleWebTranslationProvider(client,clock.UtcNow,clock.Delay);
+        await provider.TranslateAsync(new("warm up so the website host is cooling","en","zh-CN"));
+
+        apiCalls=0;failApi=true;
+        var result=await provider.TranslateAsync(new("transient on the only usable host","en","zh-CN"));
+        Assert.Equal("合成译文",result.Text);Assert.Equal(2,apiCalls);
+
+        apiCalls=0;rejectApi=true;
+        var error=await Assert.ThrowsAsync<TranslationProviderException>(()=>provider.TranslateAsync(new("rejected on the only usable host","en","zh-CN")));
+        Assert.Equal(TranslationFailureKind.Forbidden,error.Kind);Assert.Equal(1,apiCalls);
+    }
+
+    [Fact]
+    public async Task ChangedPayloadIsReportedWithoutAskingTheOtherHost()
+    {
+        var calls=0;
+        using var client=new HttpClient(new StubHandler(_=>{calls++;return Success("{}");}));
+        using var provider=new GoogleWebTranslationProvider(client);
+
+        var error=await Assert.ThrowsAsync<TranslationProviderException>(()=>provider.TranslateAsync(new("format","en","zh-CN")));
+
+        Assert.Equal(TranslationFailureKind.InvalidResponse,error.Kind);Assert.Equal(1,calls);
+    }
+
+    [Fact]
+    public async Task LongTextIsSentAsAPostFormAndShortTextStaysInTheUrl()
+    {
+        var seen=new List<(HttpMethod Method,string Url,string? Body)>();
+        using var client=new HttpClient(new AsyncStubHandler(async(request,token)=>
+        {
+            seen.Add((request.Method,request.RequestUri!.OriginalString,request.Content is null?null:await request.Content.ReadAsStringAsync(token)));
+            return Success();
+        }));
+        using var provider=new GoogleWebTranslationProvider(client);
+        // 2,500 CJK characters would be a 22 KB URL; the service answers HTTP 400 from roughly 16 KB.
+        var longText=string.Concat(Enumerable.Repeat("这是一段用于测试长度的合成文字。",160))[..2500];
+
+        await provider.TranslateAsync(new("short synthetic","en","zh-CN"));
+        await provider.TranslateAsync(new(longText,"zh-CN","en"));
+
+        Assert.Equal(HttpMethod.Get,seen[0].Method);Assert.Contains("q=short%20synthetic",seen[0].Url);Assert.Null(seen[0].Body);
+        Assert.Equal(HttpMethod.Post,seen[1].Method);Assert.DoesNotContain("q=",seen[1].Url);
+        Assert.Contains("client=gtx",seen[1].Url);Assert.Contains("dj=1",seen[1].Url);Assert.Contains("sl=zh-cn",seen[1].Url);Assert.Contains("tl=en",seen[1].Url);
+        Assert.True(seen[1].Url.Length<GoogleWebTranslationProvider.MaxGetUrlLength);
+        Assert.StartsWith("q=",seen[1].Body);Assert.Equal(longText,Uri.UnescapeDataString(seen[1].Body![2..].Replace('+',' ')));
+    }
+
+    [Fact]
+    public async Task ConnectionTestSendsOnlyFixedSyntheticTextToBothHostsAndCanProbeDuringCooldown()
     {
         var clock=new FakeClock();var urls=new List<string>();var calls=0;
         using var client=new HttpClient(new StubHandler(request=>
         {
             urls.Add(request.RequestUri!.OriginalString);calls++;
-            return calls==1?new(HttpStatusCode.TooManyRequests):Success();
+            return calls<=2?Limited():Success();
         }));
         using var provider=new GoogleWebTranslationProvider(client,clock.UtcNow,clock.Delay);
         await Assert.ThrowsAsync<TranslationProviderException>(()=>provider.TranslateAsync(new("private-placeholder","en","zh-CN")));
+        Assert.True(provider.CooldownRemaining()>TimeSpan.Zero);
 
         var test=await provider.TestConnectionAsync();
 
-        Assert.True(test.Success);Assert.Equal(2,calls);
+        Assert.True(test.Success);Assert.Equal(4,calls);
         Assert.Equal(TimeSpan.Zero,provider.CooldownRemaining());
-        Assert.Contains("q=Gtools%20connectivity%20test",urls[1]);Assert.DoesNotContain("private-placeholder",urls[1]);
+        Assert.Contains(Website,urls[2]);Assert.Contains(Apis,urls[3]);
+        Assert.Contains(Website,test.Message);Assert.Contains(Apis,test.Message);Assert.DoesNotContain("暂不可用",test.Message);
+        foreach(var url in urls.Skip(2)){Assert.Contains("q=Gtools%20connectivity%20test",url);Assert.DoesNotContain("private-placeholder",url);}
+    }
+
+    [Fact]
+    public async Task ConnectionTestReportsAUsableChannelAndNamesTheHostThatIsDown()
+    {
+        var clock=new FakeClock();
+        using var partialClient=new HttpClient(new StubHandler(request=>request.RequestUri!.Host==Website?Limited():Success()));
+        using var partial=new GoogleWebTranslationProvider(partialClient,clock.UtcNow,clock.Delay);
+        var usable=await partial.TestConnectionAsync();
+        Assert.True(usable.Success);Assert.Contains("暂不可用",usable.Message);Assert.Contains($"{Website}（HTTP 429）",usable.Message);
+        Assert.Null(usable.CooldownRemaining);
+
+        using var downClient=new HttpClient(new StubHandler(_=>Limited(TimeSpan.FromSeconds(90))));
+        using var down=new GoogleWebTranslationProvider(downClient,clock.UtcNow,clock.Delay);
+        var failed=await down.TestConnectionAsync();
+        Assert.False(failed.Success);Assert.Equal(TranslationFailureKind.TooManyRequests,failed.FailureKind);
+        Assert.Equal(TimeSpan.FromSeconds(90),failed.CooldownRemaining);
     }
 
     [Theory]
@@ -217,6 +342,48 @@ public sealed class TranslationProviderTests
     {
         var error=Assert.Throws<TranslationProviderException>(()=>GoogleWebTranslationProvider.ParsePayload(payload));
         Assert.Contains("返回格式已经变化",error.Message);
+    }
+
+    [Fact]
+    public async Task YoudaoSendsTheTextInAPostFormAndParsesTheTranslation()
+    {
+        string? url=null,body=null;HttpMethod? method=null;
+        using var client=new HttpClient(new AsyncStubHandler(async(request,token)=>
+        {
+            url=request.RequestUri!.OriginalString;method=request.Method;body=await request.Content!.ReadAsStringAsync(token);
+            return Success("{\"errorCode\":\"0\",\"translation\":[\"合成\",\"译文\"]}");
+        }));
+        var provider=new YoudaoWebTranslationProvider(client);
+
+        var result=await provider.TranslateAsync(new("synthetic source","en","zh-CN"));
+
+        Assert.Equal("合成"+Environment.NewLine+"译文",result.Text);Assert.True(result.IsUnofficial);
+        Assert.Equal(HttpMethod.Post,method);Assert.Equal("https://aidemo.youdao.com/trans",url);
+        Assert.Contains("from=en",body);Assert.Contains("to=zh-CHS",body);Assert.Contains("q=synthetic+source",body);
+    }
+
+    [Fact]
+    public async Task YoudaoExplainsFailuresInChineseInsteadOfRawExceptions()
+    {
+        async Task<TranslationProviderException> Fail(Func<HttpRequestMessage,HttpResponseMessage> respond)
+        {
+            using var client=new HttpClient(new StubHandler(respond));
+            return await Assert.ThrowsAsync<TranslationProviderException>(()=>new YoudaoWebTranslationProvider(client).TranslateAsync(new("synthetic","en","zh-CN")));
+        }
+        var tooLong=await Fail(_=>Success("{\"errorCode\":\"103\"}"));
+        Assert.Equal("youdao-web",tooLong.ProviderId);Assert.Contains("长度上限",tooLong.Message);Assert.Contains("103",tooLong.Message);
+        var server=await Fail(_=>new(HttpStatusCode.BadGateway));
+        Assert.Equal(TranslationFailureKind.Server,server.Kind);Assert.Contains("502",server.Message);
+        var html=await Fail(_=>Success("<html>blocked</html>"));
+        Assert.Equal(TranslationFailureKind.InvalidResponse,html.Kind);
+        var empty=await Fail(_=>Success("{\"errorCode\":\"0\"}"));
+        Assert.Equal(TranslationFailureKind.InvalidResponse,empty.Kind);
+        var network=await Fail(_=>throw new HttpRequestException("synthetic"));
+        Assert.Equal(TranslationFailureKind.Network,network.Kind);Assert.Contains("有道",network.Message);
+        var timeout=await Fail(_=>throw new TaskCanceledException("synthetic"));
+        Assert.Equal(TranslationFailureKind.Timeout,timeout.Kind);
+        // A Youdao failure must not offer the Google-only recovery buttons.
+        var actions=TranslationRecoveryPolicy.For(tooLong);Assert.False(actions.ShowGoogleNetworkRetry);Assert.False(actions.ShowManualYoudao);
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage,HttpResponseMessage> response) : HttpMessageHandler

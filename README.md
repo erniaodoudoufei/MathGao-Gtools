@@ -8,7 +8,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 运行环境：Windows x64 和 [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
-`v1.1.21` 增加待办颜色分组和拖动排序，并互换加粗与编辑按钮。GitHub Release 仅提供源码下载。真实浏览器/聊天软件复制及微信长截图验收仍待完成，详情见 [验收摘要](ACCEPTANCE-STATUS.md)。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json)。
+`v1.1.22` 让截图翻译先把折行还原成整句再翻译，Google 通道在两个入口之间自动切换，并可用自己的 AI 接口（如 DeepSeek）作为默认或备用通道；1.1.21 的待办颜色分组和拖动排序保持不变。GitHub Release 仅提供源码下载。真实浏览器/聊天软件复制及微信长截图验收仍待完成，详情见 [验收摘要](ACCEPTANCE-STATUS.md)。Windows ZIP 暂不公开上传：`PaddleOCRSharp 6.2.0` 携带的第三方 `PaddleOCR.dll` 没有可供本项目确认的再分发授权；待取得明确授权或替换运行时后，再补充 ZIP 与 SHA-256。详情见 [第三方组件清单](ThirdPartyLicenses/manifest.json)。
 
 当前可以从 [GitHub Tags](https://github.com/erniaodoudoufei/MathGao-Gtools/tags) 获取源码标签，也可以按下文从源码构建。若以后提供官方 ZIP，请完整解压到同一个目录，不要只复制 `Gtools.exe`；OCR 模型、原生库和两个 Worker 必须保持原有相对位置。
 
@@ -17,7 +17,7 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 ## 功能
 
 - `Alt+B`：框选屏幕并使用本地 PaddleOCR 识别，结果自动复制，可在提示中打开校对。
-- `Alt+S`：框选、OCR、自动判断中英方向，再通过 Google 网页通道、有道网页通道或用户配置的 OpenAI 兼容接口翻译。只有 OCR 后的文字会发送给翻译服务。
+- `Alt+S`：框选、OCR、自动判断中英方向，把截图里折成多行的句子还原成段落，再通过 Google 网页通道、有道网页通道或用户配置的 AI 接口（OpenAI 兼容，如 DeepSeek）翻译。只有 OCR 后的文字会发送给翻译服务。
 - 英语生词本：可选的有道词典和 dictionaryapi.dev 在线查词、标签筛选、CSV 导出及抽卡复习。
 - `Alt+Shift+S`：手动滚动微信聊天，逐帧检查并确认接缝，由独立 Worker 生成长图。
 - `Ctrl+~`：本地 SQLite 剪贴板历史，支持搜索、收藏、删除、暂停和恢复后粘贴。
@@ -57,15 +57,19 @@ MathGao-Gtools 是一个面向 Windows 的开源桌面效率工具。仓库和�
 
 待办与性能条共用一个桌面层窗口。设置中的位置锚点对应最下面性能条的左上角，因此展开或折叠待办时性能条不会跳动。启用“锁定位置”只会禁止拖动；重新启动、Explorer 桌面宿主重建以及窗口重新显示时，仍会恢复上次保存的位置。自动布局不会覆盖保存值，只有解锁后主动拖动结束才会记录新位置。
 
-## 截图翻译 1.1.9
+## 截图翻译 1.1.22
 
 翻译窗口采用浅蓝原文和浅绿译文双卡片布局。英文使用 Segoe UI，中文使用 Microsoft YaHei UI，正文为约 17px 并增加行距；文本仍可编辑、选择、复制、交换语言和加入生词本。主面板会显示正在运行的版本，设置页还会显示完整文件版本和 `Gtools.exe` 路径，可用来识别误打开的旧目录副本。
 
-Google 通道直接请求 `translate.google.com` 的免密钥非官方网页端点，并不是 Google Cloud 提供兼容承诺的正式 Translation API。请求跟随当前系统代理或 TUN，不使用第三方公共中转，也不会绕过代理。它只接收 OCR 后的文字，不接收截图，但未来仍可能因端点、返回格式、频率限制或代理出口变化而失效。正式接口的要求可参考 [Google Cloud Translation 身份验证](https://docs.cloud.google.com/translate/docs/authentication) 和 [Basic REST translate](https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate)。
+OCR 按屏幕上的视觉行输出，一句话折成两行就是两条；逐行翻译会把句子拆散（`He tried to get him to leave` / `him alone` 会被译成“他试图让他离开 / 他一个人”）。1.1.22 起先按版面把折行还原成段落再翻译：依据行距、左对齐或居中、行宽是否写满，以及句末标点、小写开头、列表符号等线索判断，中文之间不加空格、西文之间补空格。菜单、标题列表、表格单元格这类各自独立的短行保持原样，拿不准时不合并。翻译窗口的“按原始换行”可以一键退回逐行翻译。`Alt+B` 的纯 OCR 结果不受影响，仍按原始行输出。
 
-为减少限流，相同翻译会合并，成功结果只在内存缓存15分钟且最多64条；实际请求至少相隔900ms。超时和服务端异常只进行一次受控重试，HTTP 429 会遵守服务端冷却时间。OCR 完成后会先显示原文，Google 失败不会关闭结果窗；更换代理节点后可主动重试，也可由用户明确点击改用有道，Gtools 不会自动转发文字。
+Google 通道直接请求免密钥的非官方网页端点，并不是 Google Cloud 提供兼容承诺的正式 Translation API。它有 `translate.google.com` 和 `translate.googleapis.com` 两个入口，背后是同一套服务，但各自按出口 IP 单独限流：一个入口返回 429、403、超时或连接失败时自动改用另一个，被限流的入口在冷却期内直接跳过，一次翻译最多发出两次请求。文字始终只发给 Google。请求跟随当前系统代理或 TUN，不使用第三方公共中转，也不会绕过代理。它只接收 OCR 后的文字，不接收截图，但未来仍可能因端点、返回格式、频率限制或代理出口变化而失效。正式接口的要求可参考 [Google Cloud Translation 身份验证](https://docs.cloud.google.com/translate/docs/authentication) 和 [Basic REST translate](https://docs.cloud.google.com/translate/docs/reference/rest/v2/translate)。
 
-设置页的“测试 Google 通道”只发送固定合成文字，可在更换代理节点后立即检查。HTTP 429 表示当前代理出口已被网页通道限流，并不代表代理没有连接；403通常表示出口或通道策略拒绝；超时和连接失败再检查节点、DNS与网络。需要稳定的自有通道时，可配置 `openai-compatible` 地址、模型和 Key。正式 Google Cloud Translation API 需要单独的 Google Cloud 项目、身份验证和配额/计费配置，不能只替换当前 URL。
+为减少限流，相同翻译会合并，成功结果只在内存缓存15分钟且最多64条；对同一入口的请求至少相隔900ms。只剩一个入口可用时，超时、连接失败和服务端异常在该入口重试一次；HTTP 429 遵守服务端冷却时间。较长的原文改用 POST 表单发送，避免网址超长被拒绝（此前约 2000 个汉字以上会得到 HTTP 400）。OCR 完成后会先显示原文，翻译失败不会关闭结果窗；更换代理节点后可主动重试，也可以明确点击改用有道或 AI 接口。
+
+需要稳定的自有通道时，可在设置里填写 AI 接口（任何 OpenAI 兼容服务）的地址、模型和 Key。“填入 DeepSeek 预设”会写入 `https://api.deepseek.com` 与 `deepseek-flash`；“测试 AI 接口”用窗口里当前填写的值发送一句固定合成文字，保存前就能确认可用。对 DeepSeek 会关闭它默认开启的思考模式，以缩短等待。设置项“默认通道失败时自动改用备用通道”默认开启：默认通道为 Google 时，备用是已填写 Key 的 AI 接口（没填 Key 就没有备用）；默认通道为 AI 接口或有道时，备用是 Google。有道不会被自动选用，文字只有在用户点击后才会发给它。走了备用通道时，翻译窗口顶部会注明。不希望文字自动发往第二个服务，可以关闭这个选项。
+
+设置页的“测试 Google 通道”只发送固定合成文字，会分别检查两个入口并列出各自状态，可在更换代理节点后立即检查。HTTP 429 表示当前代理出口已被网页通道限流，并不代表代理没有连接；403通常表示出口或通道策略拒绝；超时和连接失败再检查节点、DNS与网络。正式 Google Cloud Translation API 需要单独的 Google Cloud 项目、身份验证和配额/计费配置，不能只替换当前 URL。
 
 ## 微信长截图 1.1.10
 
@@ -108,8 +112,8 @@ Google 通道直接请求 `translate.google.com` 的免密钥非官方网页端�
 - 长截图：当前用户“图片”目录下的 `Gtools\LongShots`
 - 临时长截图帧：当前用户临时目录，完成、取消或异常后清理
 - OCR：默认完全本地运行；离线模型和 Paddle CPU Runtime 位于 OCR Worker 目录，按需启动
-- OpenAI 兼容接口 Key：使用当前 Windows 用户的 DPAPI 加密后保存在本机
-- 翻译：Google/有道为非官方网页通道，可能失效；仅发送 OCR 后的文字，不发送截图
+- AI 接口（OpenAI 兼容）Key：使用当前 Windows 用户的 DPAPI 加密后保存在本机，不写入日志或错误提示
+- 翻译：Google/有道为非官方网页通道，可能失效；仅发送 OCR 后的文字，不发送截图。默认通道失败时，文字会自动发往备用通道（Google，或已填写 Key 的 AI 接口；从不自动发往有道），可在设置中关闭
 - 生词查词：启用自动查词时会把单词发送给有道词典和 dictionaryapi.dev，可在设置中关闭
 - 剪贴板、待办和生词本：保存在本机 SQLite，不会由 MathGao-Gtools 主动上传
 

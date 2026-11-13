@@ -25,7 +25,13 @@ public sealed record GoogleChannelTestResult(bool Success,string Message,HttpSta
 
 public sealed class GoogleWebTranslationProvider : ITranslationProvider,IDisposable
 {
-    private const string Endpoint="https://translate.google.com/translate_a/single";
+    // 两个入口背后是同一套翻译服务、同一种返回格式，但各自按出口 IP 单独限流：
+    // 共享代理出口在其中一个入口被 429 时，另一个通常仍然可用。文字始终只发给 Google。
+    internal static readonly string[] Hosts={"translate.google.com","translate.googleapis.com"};
+    private const string EndpointPath="/translate_a/single";
+    // 实测 GET 网址 12 KB 仍可用、19 KB 返回 HTTP 400（约 2000 个汉字）；代理和中间设备的常见上限是 8 KB，
+    // 超过这个长度就把原文放进 POST 表单，实测 3600 个汉字正常返回。
+    internal const int MaxGetUrlLength=6000;
     private const string TestText="Gtools connectivity test";
     private const int CacheCapacity=64;
     private static readonly TimeSpan CacheLifetime=TimeSpan.FromMinutes(15);
@@ -42,7 +48,7 @@ public sealed class GoogleWebTranslationProvider : ITranslationProvider,IDisposa
     private readonly CancellationTokenSource _lifetime=new();
     private readonly Dictionary<RequestKey,CacheEntry> _cache=new();
     private readonly Dictionary<RequestKey,Task<TranslationResult>> _inflight=new();
-    private DateTimeOffset _nextRequestAt,_cooldownUntil;
+    private readonly EndpointState[] _endpoints=Hosts.Select(host=>new EndpointState(host)).ToArray();
     private bool _disposed;
 
     public string Id => "google-web";
@@ -59,7 +65,8 @@ public sealed class GoogleWebTranslationProvider : ITranslationProvider,IDisposa
         // Proxy=null + UseProxy=true 表示使用 .NET/Windows 默认代理发现；TUN 模式仍会在系统网络层接管。
         // 不设置任何绕过地址，也不保存代理信息。
         var handler=CreateDefaultHandler();
-        _http=new HttpClient(handler){Timeout=TimeSpan.FromSeconds(15)};_ownsHttp=true;
+        // Google 正常 1–2 秒返回。单次等待缩到 10 秒，卡住的入口能更快让位给另一个入口。
+        _http=new HttpClient(handler){Timeout=TimeSpan.FromSeconds(10)};_ownsHttp=true;
     }
 
     public async Task<TranslationResult> TranslateAsync(TranslationRequest request, CancellationToken token = default)
@@ -89,7 +96,7 @@ public sealed class GoogleWebTranslationProvider : ITranslationProvider,IDisposa
     /// <summary>用户明确表示已切换代理节点后，清除本地冷却并重新探测；不会自动调用。</summary>
     public Task<TranslationResult> TranslateAfterNetworkChangeAsync(TranslationRequest request,CancellationToken token=default)
     {
-        lock(_stateGate)_cooldownUntil=DateTimeOffset.MinValue;
+        lock(_stateGate)foreach(var endpoint in _endpoints)endpoint.CooldownUntil=DateTimeOffset.MinValue;
         return TranslateAsync(request,token);
     }
 
@@ -97,32 +104,50 @@ public sealed class GoogleWebTranslationProvider : ITranslationProvider,IDisposa
     {
         ObjectDisposedException.ThrowIf(_disposed,this);
         var sw=Stopwatch.StartNew();
+        var working=new List<string>();var broken=new List<string>();TranslationProviderException? lastError=null;
+        await _requestGate.WaitAsync(token);
         try
         {
-            await _requestGate.WaitAsync(token);
-            try
+            // 连接测试由用户明确触发，允许在冷却期内对每个入口各发送一次固定合成文字，便于切换代理节点后立即验证。
+            foreach(var endpoint in _endpoints)
             {
-                // 连接测试由用户明确触发，允许在冷却期内发送一次固定合成文字，便于切换代理节点后立即验证。
-                await WaitForRequestSlotAsync(token);
-                _=await SendOnceAsync(new TranslationRequest(TestText,"en","zh-CN"),token);
+                var one=Stopwatch.StartNew();
+                try
+                {
+                    _=await SendOnceAsync(endpoint,new TranslationRequest(TestText,"en","zh-CN"),token);
+                    // A successful explicit probe means the user has restored connectivity (often by changing
+                    // the system/TUN exit). Do not keep an obsolete 429 cooldown after that confirmation.
+                    lock(_stateGate)endpoint.CooldownUntil=DateTimeOffset.MinValue;
+                    working.Add($"{endpoint.Host} {one.Elapsed.TotalSeconds:0.0}s");
+                }
+                catch(TranslationProviderException ex)
+                {
+                    lastError=ex;broken.Add($"{endpoint.Host}（{(ex.StatusCode is {} status?$"HTTP {(int)status}":FailureName(ex.Kind))}）");
+                }
             }
-            finally{_requestGate.Release();}
-            // A successful explicit probe means the user has restored connectivity (often by changing
-            // the system/TUN exit). Do not keep an obsolete 429 cooldown after that confirmation.
-            lock(_stateGate)_cooldownUntil=DateTimeOffset.MinValue;
-            return new(true,$"Google 通道可用 · {sw.Elapsed.TotalSeconds:0.0}s",HttpStatusCode.OK,null,sw.Elapsed,null);
         }
-        catch(TranslationProviderException ex)
+        finally{_requestGate.Release();}
+        if(working.Count==0)
         {
             var remaining=CooldownRemaining();
-            return new(false,ex.Message,ex.StatusCode,ex.Kind,sw.Elapsed,remaining>TimeSpan.Zero?remaining:null);
+            return new(false,lastError!.Message,lastError.StatusCode,lastError.Kind,sw.Elapsed,remaining>TimeSpan.Zero?remaining:null);
         }
+        // 只要有一个入口可用，翻译就能自动走它；另一个入口的状态如实列出来。
+        var message=broken.Count==0?$"Google 通道可用 · {string.Join(" · ",working)}"
+            :$"Google 通道可用（自动走可用入口）· 正常：{string.Join("、",working)} · 暂不可用：{string.Join("、",broken)}";
+        return new(true,message,HttpStatusCode.OK,null,sw.Elapsed,null);
     }
 
+    /// <summary>距离至少有一个入口可用还要多久；只要有入口不在冷却期就是零。</summary>
     internal TimeSpan CooldownRemaining()
     {
-        lock(_stateGate){var remaining=_cooldownUntil-_utcNow();return remaining>TimeSpan.Zero?remaining:TimeSpan.Zero;}
+        lock(_stateGate){var remaining=_endpoints.Min(e=>e.CooldownUntil)-_utcNow();return remaining>TimeSpan.Zero?remaining:TimeSpan.Zero;}
     }
+
+    private static string FailureName(TranslationFailureKind kind)=>kind switch
+    {
+        TranslationFailureKind.Timeout=>"超时",TranslationFailureKind.Network=>"无法连接",TranslationFailureKind.InvalidResponse=>"返回格式异常",_=>"失败"
+    };
 
     internal int CachedEntryCount{get{lock(_stateGate)return _cache.Count;}}
     internal int InflightRequestCount{get{lock(_stateGate)return _inflight.Count;}}
@@ -153,37 +178,55 @@ public sealed class GoogleWebTranslationProvider : ITranslationProvider,IDisposa
         await _requestGate.WaitAsync(token);
         try
         {
-            DateTimeOffset cooldown;
-            lock(_stateGate)cooldown=_cooldownUntil;
-            if(cooldown>_utcNow())throw RateLimited(cooldown,null);
+            EndpointState[] available;DateTimeOffset earliest;var now=_utcNow();
+            lock(_stateGate){available=_endpoints.Where(e=>e.CooldownUntil<=now).ToArray();earliest=_endpoints.Min(e=>e.CooldownUntil);}
+            if(available.Length==0)throw RateLimited(earliest,null);
 
-            for(var attempt=0;;attempt++)
+            // 每个可用入口各试一次，一次请求最多发两次网络调用，不会因为重试反过来加重限流。
+            TranslationProviderException? last=null;
+            for(var i=0;i<available.Length;i++)
             {
-                try
+                try{return await SendOnceAsync(available[i],request,token);}
+                catch(TranslationProviderException ex) when(CanTryAnotherEndpoint(ex.Kind))
                 {
-                    await WaitForRequestSlotAsync(token);
-                    return await SendOnceAsync(request,token);
-                }
-                catch(TranslationProviderException ex) when(attempt==0&&ex.Kind is TranslationFailureKind.Timeout or TranslationFailureKind.Server)
-                {
-                    await _delay(RetryDelay,token);
+                    last=ex;var transient=IsTransient(ex.Kind);
+                    if(available.Length==1)
+                    {
+                        // 另一个入口正在冷却、只剩这一个可用时，瞬时故障在原入口上再试一次。
+                        if(!transient)break;
+                        await _delay(RetryDelay,token);
+                        return await SendOnceAsync(available[0],request,token);
+                    }
+                    if(transient&&i<available.Length-1)await _delay(RetryDelay,token);
                 }
             }
+            // 全部入口都被限流时给出统一的冷却提示；否则报告最后一个入口的具体原因。
+            DateTimeOffset? allCoolingUntil=null;
+            lock(_stateGate){now=_utcNow();if(_endpoints.All(e=>e.CooldownUntil>now))allCoolingUntil=_endpoints.Min(e=>e.CooldownUntil);}
+            throw allCoolingUntil is {} until?RateLimited(until,HttpStatusCode.TooManyRequests):last!;
         }
         finally{_requestGate.Release();}
     }
 
-    private async Task WaitForRequestSlotAsync(CancellationToken token)
+    // 429 和 403 是针对“这个入口 + 这个出口 IP”的拒绝，换入口有意义、在原入口重试没有意义；
+    // 格式变化和 4xx 参数错误换入口也一样，直接报告。
+    private static bool CanTryAnotherEndpoint(TranslationFailureKind kind)=>kind is TranslationFailureKind.TooManyRequests
+        or TranslationFailureKind.Forbidden or TranslationFailureKind.Server or TranslationFailureKind.Timeout or TranslationFailureKind.Network;
+    private static bool IsTransient(TranslationFailureKind kind)=>kind is TranslationFailureKind.Server or TranslationFailureKind.Timeout or TranslationFailureKind.Network;
+
+    private async Task WaitForRequestSlotAsync(EndpointState endpoint,CancellationToken token)
     {
-        var wait=_nextRequestAt-_utcNow();
+        // 限流按入口计，节流也按入口计：切换到另一个入口不需要再等 900 毫秒。
+        var wait=endpoint.NextRequestAt-_utcNow();
         if(wait>TimeSpan.Zero)await _delay(wait,token);
-        _nextRequestAt=_utcNow()+RequestInterval;
+        endpoint.NextRequestAt=_utcNow()+RequestInterval;
     }
 
-    private async Task<TranslationResult> SendOnceAsync(TranslationRequest request,CancellationToken token)
+    private async Task<TranslationResult> SendOnceAsync(EndpointState endpoint,TranslationRequest request,CancellationToken token)
     {
+        await WaitForRequestSlotAsync(endpoint,token);
         var sw=Stopwatch.StartNew();
-        using var message=new HttpRequestMessage(HttpMethod.Get,BuildUrl(request));
+        using var message=BuildMessage(endpoint.Host,request);
         message.Headers.TryAddWithoutValidation("User-Agent","Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
         message.Headers.TryAddWithoutValidation("Accept","application/json,text/plain,*/*");
         message.Headers.TryAddWithoutValidation("Accept-Language","zh-CN,zh;q=0.9,en;q=0.8");
@@ -201,7 +244,7 @@ public sealed class GoogleWebTranslationProvider : ITranslationProvider,IDisposa
                 if(response.StatusCode==HttpStatusCode.TooManyRequests)
                 {
                     var until=ResolveRetryAfter(response,_utcNow());
-                    lock(_stateGate)_cooldownUntil=until;
+                    lock(_stateGate)endpoint.CooldownUntil=until;
                     throw RateLimited(until,response.StatusCode);
                 }
                 throw Failure(KindOf(response.StatusCode),DescribeStatus(response.StatusCode),response.StatusCode);
@@ -211,17 +254,21 @@ public sealed class GoogleWebTranslationProvider : ITranslationProvider,IDisposa
         }
     }
 
-    internal static string BuildUrl(TranslationRequest request) => Endpoint+
-        "?client=gtx&dt=t&dj=1&ie=UTF-8&oe=UTF-8"+
-        $"&sl={Uri.EscapeDataString(NormalizeLanguage(request.SourceLanguage))}"+
-        $"&tl={Uri.EscapeDataString(NormalizeLanguage(request.TargetLanguage))}"+
-        $"&q={Uri.EscapeDataString(request.Text)}";
+    internal static HttpRequestMessage BuildMessage(string host,TranslationRequest request)
+    {
+        var url=$"https://{host}{EndpointPath}?client=gtx&dt=t&dj=1&ie=UTF-8&oe=UTF-8"+
+            $"&sl={Uri.EscapeDataString(NormalizeLanguage(request.SourceLanguage))}"+
+            $"&tl={Uri.EscapeDataString(NormalizeLanguage(request.TargetLanguage))}";
+        var query="&q="+Uri.EscapeDataString(request.Text);
+        if(url.Length+query.Length<=MaxGetUrlLength)return new(HttpMethod.Get,url+query);
+        return new(HttpMethod.Post,url){Content=new FormUrlEncodedContent(new[]{new KeyValuePair<string,string>("q",request.Text)})};
+    }
 
     internal static string DescribeStatus(HttpStatusCode statusCode) => statusCode switch
     {
         HttpStatusCode.Forbidden => "Google 网站通道拒绝访问（HTTP 403），请检查当前代理出口或稍后重试。",
         HttpStatusCode.TooManyRequests => "当前代理出口被 Google 网站通道限流（HTTP 429）。请等待冷却，或切换代理节点后重试。",
-        >=HttpStatusCode.InternalServerError => $"Google 网站服务暂时异常（HTTP {(int)statusCode}），Gtools 已进行一次受控重试。",
+        >=HttpStatusCode.InternalServerError => $"Google 网站服务暂时异常（HTTP {(int)statusCode}），Gtools 已自动换入口重试过一次。",
         _ => $"Google 网站通道请求失败（HTTP {(int)statusCode}），请检查代理节点或手动切换翻译 Provider。"
     };
 
@@ -308,13 +355,20 @@ public sealed class GoogleWebTranslationProvider : ITranslationProvider,IDisposa
 
     private readonly record struct RequestKey(string Text,string SourceLanguage,string TargetLanguage);
     private sealed record CacheEntry(TranslationResult Result,DateTimeOffset ExpiresAt,DateTimeOffset LastAccess);
+    /// <summary>NextRequestAt 只在持有 _requestGate 时读写；CooldownUntil 只在 _stateGate 内读写。</summary>
+    private sealed class EndpointState(string host)
+    {
+        public string Host{get;}=host;
+        public DateTimeOffset NextRequestAt,CooldownUntil;
+    }
 }
 
 public sealed class YoudaoWebTranslationProvider : ITranslationProvider
 {
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private readonly HttpClient _http;
     public string Id => "youdao-web";
     public string DisplayName => "有道免费网页通道（非官方）";
+    public YoudaoWebTranslationProvider(HttpClient? httpClient=null)=>_http=httpClient??new(){Timeout=TimeSpan.FromSeconds(15)};
 
     // 有道用自己的语言代码；auto 让它自行判断。
     private static string Map(string language) => language switch
@@ -327,16 +381,47 @@ public sealed class YoudaoWebTranslationProvider : ITranslationProvider
     public async Task<TranslationResult> TranslateAsync(TranslationRequest request, CancellationToken token = default)
     {
         var sw = Stopwatch.StartNew();
-        var url = "https://aidemo.youdao.com/trans" +
-                  $"?from={Uri.EscapeDataString(Map(request.SourceLanguage))}&to={Uri.EscapeDataString(Map(request.TargetLanguage))}" +
-                  $"&q={Uri.EscapeDataString(request.Text)}";
-        using var response = await _http.GetAsync(url, token); response.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
-        if (doc.RootElement.TryGetProperty("errorCode", out var code) && code.ValueKind == JsonValueKind.String && code.GetString() is not ("0" or null))
-            throw new InvalidOperationException($"有道通道返回错误码 {code.GetString()}。");
-        if (!doc.RootElement.TryGetProperty("translation", out var translation) || translation.ValueKind != JsonValueKind.Array)
-            throw new InvalidOperationException("有道通道没有返回译文。");
-        var text = string.Join(Environment.NewLine, translation.EnumerateArray().Select(x => x.GetString()).Where(x => x is not null));
-        return new(DisplayName, text, sw.Elapsed, true);
+        // 原文放在 POST 表单里：长文本不受网址长度限制，也不会出现在代理的访问日志网址里。
+        using var message = new HttpRequestMessage(HttpMethod.Post, "https://aidemo.youdao.com/trans")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            { ["from"] = Map(request.SourceLanguage), ["to"] = Map(request.TargetLanguage), ["q"] = request.Text })
+        };
+        string payload;
+        try
+        {
+            using var response = await _http.SendAsync(message, token);
+            if (!response.IsSuccessStatusCode)
+                throw Failure((int)response.StatusCode >= 500 ? TranslationFailureKind.Server : TranslationFailureKind.Other,
+                    $"有道通道请求失败（HTTP {(int)response.StatusCode}），请稍后重试或改用其他通道。", response.StatusCode);
+            payload = await response.Content.ReadAsStringAsync(token);
+        }
+        catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+        { throw Failure(TranslationFailureKind.Timeout, "有道通道请求超时，请检查网络后重试。", inner: ex); }
+        catch (HttpRequestException ex)
+        { throw Failure(TranslationFailureKind.Network, "无法连接有道通道，请检查网络设置。", inner: ex); }
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            if (doc.RootElement.TryGetProperty("errorCode", out var code) && code.ValueKind == JsonValueKind.String && code.GetString() is not ("0" or null))
+                throw Failure(TranslationFailureKind.Other, DescribeErrorCode(code.GetString()!));
+            if (!doc.RootElement.TryGetProperty("translation", out var translation) || translation.ValueKind != JsonValueKind.Array)
+                throw Failure(TranslationFailureKind.InvalidResponse, "有道通道没有返回译文，接口格式可能已经变化。");
+            var text = string.Join(Environment.NewLine, translation.EnumerateArray().Select(x => x.GetString()).Where(x => x is not null));
+            return new(DisplayName, text, sw.Elapsed, true);
+        }
+        catch (JsonException ex)
+        { throw Failure(TranslationFailureKind.InvalidResponse, "有道通道返回了无法解析的内容，接口可能已经变化。", inner: ex); }
     }
+
+    // 103 实测在 4000 多个字符时出现，GET 和 POST 都一样，是服务本身的长度上限。
+    internal static string DescribeErrorCode(string code) => code switch
+    {
+        "103" => "文本超过了有道通道的长度上限（错误码 103），请分段翻译或改用其他通道。",
+        "411" or "412" => $"有道通道访问过于频繁（错误码 {code}），请稍后重试或改用其他通道。",
+        _ => $"有道通道返回错误码 {code}，请稍后重试或改用其他通道。"
+    };
+
+    private static TranslationProviderException Failure(TranslationFailureKind kind, string message, HttpStatusCode? status = null, Exception? inner = null)
+        => new("youdao-web", kind, message, status, innerException: inner);
 }

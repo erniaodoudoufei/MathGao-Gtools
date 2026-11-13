@@ -20,6 +20,11 @@ public sealed class GtoolsSettings
     public string LongShotHotkey { get; set; } = "Alt+Shift+S";
     public string ClipboardHotkey { get; set; } = "Ctrl+Oem3";
     public string TranslationProvider { get; set; } = "google-web";
+    /// <summary>
+    /// 默认通道失败时自动改用备用通道：Google 失败改用已填写 Key 的 AI 接口，AI 接口或有道失败改用 Google。
+    /// 不会自动改用有道，那仍然需要在翻译窗口里手动点。
+    /// </summary>
+    public bool TranslationAutoFallback { get; set; } = true;
     public string OpenAiBaseUrl { get; set; } = "https://api.openai.com/v1";
     public string OpenAiModel { get; set; } = "gpt-4.1-mini";
     public string OpenAiKeyProtected { get; set; } = "";
